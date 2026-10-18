@@ -1,0 +1,20 @@
+[package]
+name = "vd-net"
+description = "Async (tokio) networking of the Virtual Desktop streamer: peers, channels, rendezvous, discovery"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+vd-protocol = { path = "../vd-protocol" }
+bytemuck.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+socket2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+if-addrs = "0.13.1"
+igd-next = { version = "0.15.1", features = ["aio_tokio"] }
+mac_address = "1.1.7"

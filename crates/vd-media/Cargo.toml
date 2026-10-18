@@ -1,0 +1,21 @@
+[package]
+name = "vd-media"
+description = "Video encoding, capture pipelines and media-file playback behind an FFmpeg-version-independent API"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Use libavcodec/libavformat directly through `ffmpeg-next` (pin the major version here when
+# upgrading FFmpeg: ffmpeg-next 7.x <-> FFmpeg 7.x).  The CLI backend is always available.
+ffmpeg-lib = ["dep:ffmpeg-next"]
+
+[dependencies]
+vd-protocol = { path = "../vd-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+ffmpeg-next = { version = "7.0.4", optional = true }
