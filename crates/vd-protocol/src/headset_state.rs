@@ -21,21 +21,43 @@ use bytemuck::{Pod, Zeroable};
 use crate::error::{ProtocolError, Result};
 use crate::math::{Pose, Quat, Vec3};
 
-/// One "pointer" (laser / touch contact) driven by a controller.  C#: `_000F._0002` (10 bytes).
+/// One "pointer" (laser / touch contact) driven by a controller.  C#: `_0003_0002._0003` (10 bytes).
 ///
-/// `VirtualDesktop.Server` turns each of the two pointers into a Windows touch contact (or mouse
-/// when touch input is disabled) at `(x, y)`.
+/// `VirtualDesktop.Server` turns each of the two pointers into a Windows touch contact at
+/// `(x, y)` (`_0008._0002._0001(in, in)`):
+/// * `buttons[0] || buttons[1]` — the pointer is in range (hovering); the contact follows `(x, y)`.
+/// * `buttons[2] || buttons[3] || buttons[4]` — the contact is down.  `buttons[3]` makes it a
+///   secondary (right) press, `buttons[4]` a tertiary (middle) press, otherwise primary (left).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Pod, Zeroable)]
 pub struct PointerState {
-    /// Five button / contact booleans: `[contact, secondary, middle, back, forward]` (inferred order).
+    /// `[in range, in range, contact, contact (secondary), contact (middle)]`.
     pub buttons: [u8; 5],
     /// Alignment padding.
     pub _pad: u8,
-    /// Horizontal position in desktop pixels of the streamed monitor.
+    /// Horizontal position in physical virtual-desktop pixels (the server only divides by its
+    /// DPI-virtualisation factor; no monitor origin is added).
     pub x: i16,
-    /// Vertical position in desktop pixels of the streamed monitor.
+    /// Vertical position in physical virtual-desktop pixels.
     pub y: i16,
+}
+
+impl PointerState {
+    /// Whether the pointer is in range (hovering or touching).
+    ///
+    /// # Returns
+    /// `buttons[0] || buttons[1]`.
+    pub fn in_range(&self) -> bool {
+        self.buttons[0] != 0 || self.buttons[1] != 0
+    }
+
+    /// Whether the contact is down.
+    ///
+    /// # Returns
+    /// `buttons[2] || buttons[3] || buttons[4]`.
+    pub fn contact(&self) -> bool {
+        self.buttons[2..5].iter().any(|b| *b != 0)
+    }
 }
 
 /// Eight-key keyboard roll-over state.  C#: `_0083_0002._0004` (explicit layout).
@@ -101,27 +123,50 @@ impl KeyboardState {
     }
 }
 
-/// Relative mouse + wheel state.  C#: `_0006_0002._0003` (20 bytes).
+/// Mouse emulation state ("mouse mode" on the headset).  C#: `_0003_0002._0002` (20 bytes).
 ///
-/// The server injects `wheel_x/wheel_y` as scroll and then zeroes them in shared memory, i.e.
-/// they are *accumulated deltas*; `dx/dy` are relative pointer motion.
+/// The streamer overwrites the whole [`InputState`] in shared memory with every headset packet,
+/// and the server's 1 ms injection loop (`_0008._0002._0001()`) then:
+/// * ignores motion, presses and the wheel unless `buttons[0]` (mouse mode active) is set, and
+///   zeroes `x`/`y` when it is clear; releases are still delivered when it turns off;
+/// * edge-triggers `buttons[1..6]` = left, middle, right, X1, X2 against the previous state;
+/// * moves the cursor by `round(x), round(y)` pixels **every millisecond** (the values persist
+///   until the next packet, so they are a velocity in px/ms), or — when
+///   [`ControllerButtons::absolute_mouse`] is set — to the absolute position `(x, y)` in
+///   primary-monitor pixels;
+/// * injects `wheel_x * 8` (`MOUSEEVENTF_HWHEEL`) and `wheel_y * 8` (`MOUSEEVENTF_WHEEL`) once
+///   and zeroes both (they are per-packet deltas).  While a laser pointer is in range they
+///   become touch-scroll input instead.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default, Pod, Zeroable)]
 pub struct MouseState {
-    /// `[left, right, middle, x1, x2, relative-mode]` (inferred order).
+    /// `[active, left, middle, right, x1, x2]`.
     pub buttons: [u8; 6],
     /// Alignment padding.
     pub _pad0: [u8; 2],
-    /// Horizontal wheel delta (WHEEL_DELTA units / 120).
-    pub wheel_x: f32,
-    /// Vertical wheel delta (WHEEL_DELTA units / 120).
-    pub wheel_y: f32,
-    /// Relative X motion.
-    pub dx: i8,
-    /// Relative Y motion.
-    pub dy: i8,
+    /// Horizontal velocity (px/ms) or absolute X.
+    pub x: f32,
+    /// Vertical velocity (px/ms, positive = down) or absolute Y.
+    pub y: f32,
+    /// Horizontal wheel delta in 1/15 notch units (× 8 = `WHEEL_DELTA` units; positive = right).
+    pub wheel_x: i8,
+    /// Vertical wheel delta in 1/15 notch units (× 8 = `WHEEL_DELTA` units; positive = up).
+    pub wheel_y: i8,
     /// Alignment padding.
     pub _pad1: [u8; 2],
+}
+
+impl MouseState {
+    /// Index of the "mouse mode active" flag in [`MouseState::buttons`].
+    pub const ACTIVE: usize = 0;
+
+    /// Whether mouse mode is active.
+    ///
+    /// # Returns
+    /// `buttons[0] != 0`.
+    pub fn active(&self) -> bool {
+        self.buttons[Self::ACTIVE] != 0
+    }
 }
 
 /// Xbox-style gamepad state.  C#: `_0098_0002._0002` (14 bytes) — identical to `XINPUT_GAMEPAD`
@@ -149,7 +194,7 @@ pub struct GamepadState {
     pub _pad: u8,
 }
 
-/// VR controller buttons for controller-to-gamepad emulation.  C#: `_0011._0002` (18 bytes).
+/// VR controller buttons for controller-to-gamepad emulation.  C#: `_0003_0002._0001` (18 bytes).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Pod, Zeroable)]
 pub struct ControllerButtons {
@@ -161,8 +206,9 @@ pub struct ControllerButtons {
     pub analog: [u8; 4],
     /// Thumbsticks `[lx, ly, rx, ry]`.
     pub thumbsticks: [i16; 4],
-    /// Boolean `_0001` (controllers active).
-    pub active: u8,
+    /// Boolean `_0001`: the server treats [`MouseState::x`]/[`MouseState::y`] as an absolute
+    /// position instead of a velocity while it is set.
+    pub absolute_mouse: u8,
     /// Alignment padding.
     pub _pad: u8,
 }

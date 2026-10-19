@@ -222,6 +222,8 @@ async fn probe() -> Result<()> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging(&cli.log);
+    // Physical-pixel monitor rectangles, matching the headset's pointer coordinates.
+    vd_platform::display::enable_dpi_awareness();
     match cli.command.unwrap_or(Command::Run { direct: false }) {
         Command::Run { direct } => run(direct).await,
         Command::Probe => probe().await,

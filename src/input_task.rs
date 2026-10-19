@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -14,6 +15,9 @@ use vd_protocol::types::StreamingSource;
 use crate::app::App;
 
 static RELEASE_GAMEPAD: AtomicBool = AtomicBool::new(false);
+
+/// Period of the mouse-mode motion tick (the server's loop runs every 1 ms).
+const MOTION_TICK: Duration = Duration::from_millis(2);
 
 /// Requests that the virtual gamepad be reset (`DisposeGamepadEmulation`).
 pub fn release_gamepad() {
@@ -46,25 +50,36 @@ fn open(app: &App) -> Box<dyn InputBackend> {
 /// * `app` - application context.
 /// * `states` - decoded headset states from the data channel.
 pub async fn run(app: Arc<App>, mut states: mpsc::Receiver<HeadsetState>) {
-    let mut translator = InputTranslator::new((0, 0));
+    let mut translator = InputTranslator::new();
     let mut backend: Option<Box<dyn InputBackend>> = None;
     let mut dyn_rx = app.state.dynamic.subscribe();
+    // Mouse-mode motion is a velocity the server applies every millisecond between packets.
+    let mut motion = tokio::time::interval(MOTION_TICK);
+    motion.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_tick = Instant::now();
     loop {
         tokio::select! {
+            _ = motion.tick() => {
+                let now = Instant::now();
+                let elapsed = now - last_tick;
+                last_tick = now;
+                if let (Some(b), Some(ev)) = (backend.as_mut(), translator.tick(elapsed)) {
+                    if let Err(e) = b.emit(&[ev]) {
+                        warn!(error = %e, "input injection failed");
+                    }
+                }
+            }
             s = states.recv() => {
                 let Some(state) = s else { return };
                 app.headset_frame.store(state.frame_index, Ordering::Relaxed);
-                if app.state.streaming_source() != StreamingSource::Desktop {
+                let desktop = app.state.streaming_source() == StreamingSource::Desktop;
+                let gamepad = app.state.user.borrow().emulate_gamepad;
+                if !desktop && !gamepad && backend.is_none() {
                     continue;
                 }
                 let b = backend.get_or_insert_with(|| open(&app));
-                {
-                    let d = app.state.dynamic.borrow();
-                    if let Some(m) = d.monitors.get(d.monitor_start_index) {
-                        translator.origin = (m.x, m.y);
-                    }
-                }
-                let mut events = translator.translate(&state.input, app.state.user.borrow().emulate_gamepad);
+                // Pointer coordinates are already physical virtual-desktop pixels.
+                let mut events = translator.translate(&state.input, desktop, gamepad);
                 if RELEASE_GAMEPAD.swap(false, Ordering::Relaxed) {
                     events.push(InputEvent::Gamepad(GamepadState::default()));
                 }

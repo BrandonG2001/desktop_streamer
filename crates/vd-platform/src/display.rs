@@ -108,6 +108,27 @@ pub fn monitors() -> Result<Vec<MonitorInfo>> {
     Err(PlatformError::Unsupported("monitor enumeration"))
 }
 
+/// Makes the process per-monitor DPI aware (Windows; a no-op elsewhere).
+///
+/// Without this, Windows virtualises monitor rectangles to 96 DPI when display scaling is above
+/// 100 %, while the headset's laser-pointer coordinates and the captured frames are in physical
+/// pixels — the cursor would land at the wrong place.  Call once at start-up, before any monitor
+/// enumeration or window creation.
+///
+/// # Returns
+/// `true` if awareness was set (or is not applicable), `false` if Windows refused (already set,
+/// e.g. by a manifest).
+pub fn enable_dpi_awareness() -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
+        // SAFETY: plain Win32 call with a predefined context handle.
+        return unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) } != 0;
+    }
+    #[allow(unreachable_code)]
+    true
+}
+
 #[cfg(windows)]
 mod win {
     use super::MonitorInfo;

@@ -48,6 +48,8 @@ pub struct UinputBackend {
     gamepad: Option<VirtualDevice>,
     want_gamepad: bool,
     bounds: DesktopBounds,
+    /// High-resolution wheel units `(vertical, horizontal)` not yet reported as whole notches.
+    wheel_rest: (i32, i32),
 }
 
 impl UinputBackend {
@@ -104,7 +106,7 @@ impl UinputBackend {
             .build()
             .map_err(map_err)?;
 
-        let mut me = Self { kbd_mouse, pointer, gamepad: None, want_gamepad: gamepad, bounds };
+        let mut me = Self { kbd_mouse, pointer, gamepad: None, want_gamepad: gamepad, bounds, wheel_rest: (0, 0) };
         if gamepad {
             me.ensure_gamepad()?;
         }
@@ -207,16 +209,21 @@ impl InputBackend for UinputBackend {
                 }
                 InputEvent::Button { button, down } => km.push(EvEvent::new(EventType::KEY, button_key(*button).code(), i32::from(*down))),
                 InputEvent::Wheel { vertical, horizontal } => {
+                    // Legacy notch axes get whole notches only; the remainder carries over.
                     if *vertical != 0 {
                         km.push(EvEvent::new(EventType::RELATIVE, RelativeAxisType::REL_WHEEL_HI_RES.0, *vertical));
-                        if vertical / 120 != 0 {
-                            km.push(EvEvent::new(EventType::RELATIVE, RelativeAxisType::REL_WHEEL.0, vertical / 120));
+                        self.wheel_rest.0 += vertical;
+                        if self.wheel_rest.0 / 120 != 0 {
+                            km.push(EvEvent::new(EventType::RELATIVE, RelativeAxisType::REL_WHEEL.0, self.wheel_rest.0 / 120));
+                            self.wheel_rest.0 %= 120;
                         }
                     }
                     if *horizontal != 0 {
                         km.push(EvEvent::new(EventType::RELATIVE, RelativeAxisType::REL_HWHEEL_HI_RES.0, *horizontal));
-                        if horizontal / 120 != 0 {
-                            km.push(EvEvent::new(EventType::RELATIVE, RelativeAxisType::REL_HWHEEL.0, horizontal / 120));
+                        self.wheel_rest.1 += horizontal;
+                        if self.wheel_rest.1 / 120 != 0 {
+                            km.push(EvEvent::new(EventType::RELATIVE, RelativeAxisType::REL_HWHEEL.0, self.wheel_rest.1 / 120));
+                            self.wheel_rest.1 %= 120;
                         }
                     }
                 }

@@ -1,4 +1,4 @@
-//! Audio capture and virtual microphone.
+//! Linux audio back-end (PulseAudio / PipeWire through `pactl`, `parec`, `pacat`).
 //!
 //! C#: `VirtualDesktop.Streamer.LoopbackCapture` (WASAPI loopback of the default render device
 //! or of the "Virtual Desktop Audio" device, converted to 48 kHz stereo s16 with gain 0.9 and
@@ -15,8 +15,7 @@
 //!   **Virtual Desktop Microphone** and made the default source.
 //!
 //! The helpers (`pactl`, `parec`, `pacat`) ship with every Pulse/PipeWire desktop.  The Windows
-//! implementation (WASAPI + the original virtual audio driver) is not ported; use the original
-//! streamer on Windows or extend [`LoopbackCapture`] with a WASAPI backend.
+//! counterpart is [`super::wasapi`].
 
 use std::process::Stdio;
 
@@ -26,6 +25,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use vd_protocol::channels::audio::{SAMPLE_RATE, SPEAKER_GAIN, SPEAKER_PACKET_BYTES};
 
+use super::convert::apply_gain_s16;
 use crate::error::{PlatformError, Result};
 
 /// Name of the virtual speaker sink.
@@ -34,21 +34,6 @@ pub const VIRTUAL_SINK: &str = "virtual_desktop_audio";
 pub const MIC_SINK: &str = "virtual_desktop_mic_sink";
 /// Name of the virtual microphone source.
 pub const MIC_SOURCE: &str = "virtual_desktop_mic";
-
-/// Multiplies signed 16-bit little-endian samples by `gain` with saturation.
-///
-/// # Arguments
-/// * `pcm` - samples, modified in place.
-/// * `gain` - linear gain.
-pub fn apply_gain_s16(pcm: &mut [u8], gain: f32) {
-    if (gain - 1.0).abs() < f32::EPSILON {
-        return;
-    }
-    for s in pcm.chunks_exact_mut(2) {
-        let v = f32::from(i16::from_le_bytes([s[0], s[1]])) * gain;
-        s.copy_from_slice(&(v.clamp(-32768.0, 32767.0) as i16).to_le_bytes());
-    }
-}
 
 async fn pactl(args: &[&str]) -> Result<String> {
     let out = Command::new("pactl").args(args).stdin(Stdio::null()).output().await.map_err(|e| PlatformError::Command(format!("pactl: {e}")))?;
@@ -252,17 +237,5 @@ impl MicrophonePlayback {
     pub async fn stop(&mut self) {
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn gain_saturates() {
-        let mut pcm = 30000i16.to_le_bytes().to_vec();
-        apply_gain_s16(&mut pcm, 2.0);
-        assert_eq!(i16::from_le_bytes([pcm[0], pcm[1]]), 32767);
     }
 }

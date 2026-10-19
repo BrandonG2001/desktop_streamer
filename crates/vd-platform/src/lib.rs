@@ -12,7 +12,7 @@
 //! | service (C#)        | module          | Linux implementation                        | Windows implementation        |
 //! |---------------------|-----------------|---------------------------------------------|-------------------------------|
 //! | `IInputInjection`   | [`input`]       | `/dev/uinput` keyboard, mouse, pointer, pad | `SendInput`                   |
-//! | `IAudioService` + `vdvad.sys` | [`audio`] | PulseAudio/PipeWire null sink + remap source | not ported (use the original) |
+//! | `LoopbackCapture`, `Microphone`, `IAudioService` + `vdvad.sys` | [`audio`] | PulseAudio/PipeWire null sink + remap source | WASAPI loopback + `IKsControl` on the installed `vdvad.sys` |
 //! | `IMonitorDuplication.GetMonitors` | [`display`] | `xrandr --listmonitors`            | `EnumDisplayMonitors`         |
 //! | `libVirtualDesktopNet.dll` | [`wlan`] | `iw` power-save off                         | `wlanapi` (exact port)        |
 //! | `IServiceManager.UseRealtimePriority` | [`process`] | `setpriority`                    | `SetPriorityClass`            |

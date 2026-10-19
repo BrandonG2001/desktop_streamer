@@ -6,6 +6,8 @@
 //! gamepad events.  This module performs the same diffing ([`InputTranslator`]) and hands the
 //! resulting device-independent [`InputEvent`]s to a platform [`InputBackend`].
 
+use std::time::Duration;
+
 use vd_protocol::headset_state::{GamepadState, InputState};
 
 use crate::error::Result;
@@ -31,7 +33,9 @@ pub enum MouseButton {
 }
 
 impl MouseButton {
-    const ORDER: [MouseButton; 5] = [MouseButton::Left, MouseButton::Right, MouseButton::Middle, MouseButton::Back, MouseButton::Forward];
+    /// Buttons of [`vd_protocol::headset_state::MouseState::buttons`]`[1..6]`, in order
+    /// (C#: `LEFT`, `MIDDLE`, `RIGHT`, `XBUTTON1`, `XBUTTON2` in `_0008._0002._0001(in _0002)`).
+    const MOUSE_ORDER: [MouseButton; 5] = [MouseButton::Left, MouseButton::Middle, MouseButton::Right, MouseButton::Back, MouseButton::Forward];
 }
 
 /// Device-independent input event.
@@ -76,36 +80,56 @@ pub enum InputEvent {
     Gamepad(GamepadState),
 }
 
-/// Converts successive [`InputState`]s into events.
+/// Longest gap, in milliseconds, that [`InputTranslator::tick`] turns into motion at once (avoids
+/// a cursor jump after a stall).
+const MAX_TICK_MS: f64 = 50.0;
+
+/// Converts successive [`InputState`]s into events, reproducing the 1 ms injection loop of
+/// `VirtualDesktop.Server.exe` (`_0008._0002._0001()`):
+///
+/// * **Keyboard** — every slot holding a scan code is a held key.
+/// * **Laser pointers** — while a pointer is in range the cursor follows it (absolute); its
+///   contact presses left, right (`buttons[3]`) or middle (`buttons[4]`).  The original injects
+///   real touch contacts; this port emulates them with the mouse, so when both controllers point
+///   at the screen the one in contact owns the cursor.
+/// * **Mouse mode** — only while [`MouseState::active`](vd_protocol::headset_state::MouseState::active):
+///   buttons left/middle/right/X1/X2, motion as a velocity applied by [`InputTranslator::tick`]
+///   (or an absolute position when `controllers.absolute_mouse` is set), and the wheel.  While a
+///   pointer is in range the mouse is ignored except for the wheel, which scrolls under it.
+/// * **Gamepad** — forwarded as is when emulation is enabled.
 #[derive(Debug, Default)]
 pub struct InputTranslator {
+    /// Last state passed to [`InputTranslator::translate`].
     prev: Option<InputState>,
-    wheel_rest: (f32, f32),
-    /// Offset added to pointer coordinates (origin of the streamed monitor).
-    pub origin: (i32, i32),
+    /// Mouse buttons held by mouse mode.
+    mouse_held: Vec<MouseButton>,
+    /// Button held by each pointer's contact.
+    contact: [Option<MouseButton>; 2],
+    /// Milliseconds of mouse-mode motion not yet emitted.
+    pending_ms: f64,
 }
 
 impl InputTranslator {
-    /// Creates a translator.
-    ///
-    /// # Arguments
-    /// * `origin` - virtual-desktop position of the streamed monitor.
+    /// Creates a translator with nothing held.
     ///
     /// # Returns
     /// The translator.
-    pub fn new(origin: (i32, i32)) -> Self {
-        Self { prev: None, wheel_rest: (0.0, 0.0), origin }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Diffs `state` against the previous state.
     ///
     /// # Arguments
     /// * `state` - newest input state.
+    /// * `desktop` - the desktop is being streamed (`StreamingSource.Desktop`).  Otherwise the
+    ///   streamer only forwards the gamepad, so keys, pointers and mouse buttons are released.
     /// * `gamepad_enabled` - `SharedUserSettings.EmulateGamepad`.
     ///
     /// # Returns
     /// The events to inject, in order.
-    pub fn translate(&mut self, state: &InputState, gamepad_enabled: bool) -> Vec<InputEvent> {
+    pub fn translate(&mut self, state: &InputState, desktop: bool, gamepad_enabled: bool) -> Vec<InputEvent> {
+        let state = if desktop { *state } else { InputState { gamepad: state.gamepad, gamepad_model: state.gamepad_model, ..InputState::default() } };
         let prev = self.prev.unwrap_or_default();
         let mut ev = Vec::new();
 
@@ -119,48 +143,113 @@ impl InputTranslator {
             ev.push(InputEvent::Key { scan: *k, down: true });
         }
 
-        // Laser pointers (absolute).
-        for (cur, old) in state.pointers.iter().zip(prev.pointers.iter()) {
-            let moved = (cur.x, cur.y) != (old.x, old.y);
-            let active = cur.buttons.iter().any(|b| *b != 0) || old.buttons.iter().any(|b| *b != 0);
-            if moved && (cur.x != 0 || cur.y != 0) {
-                ev.push(InputEvent::PointerAbs { x: self.origin.0 + i32::from(cur.x), y: self.origin.1 + i32::from(cur.y) });
+        let pointer_active = state.pointers.iter().any(|p| p.in_range());
+        self.pointers(&state, &prev, &mut ev);
+
+        // Wheel deltas are per packet (the server zeroes them after injecting `value * 8`).
+        let m = &state.mouse;
+        let has_wheel = m.wheel_x != 0 || m.wheel_y != 0;
+        let wheel = InputEvent::Wheel { vertical: i32::from(m.wheel_y) * 8, horizontal: i32::from(m.wheel_x) * 8 };
+        if pointer_active {
+            // C#: InjectScrollInput(wheel_x, wheel_y) — touch scrolling under the laser.
+            if has_wheel {
+                ev.push(wheel);
             }
-            if active {
-                for (i, button) in MouseButton::ORDER.iter().take(3).enumerate() {
-                    let (c, o) = (cur.buttons[i] != 0, old.buttons[i] != 0);
-                    if c != o {
-                        ev.push(InputEvent::Button { button: *button, down: c });
-                    }
+        } else {
+            // Releases are delivered even when mouse mode has just been turned off.
+            for (i, button) in MouseButton::MOUSE_ORDER.iter().enumerate() {
+                let down = m.active() && m.buttons[i + 1] != 0;
+                if !down && self.mouse_held.contains(button) {
+                    self.mouse_held.retain(|b| b != button);
+                    ev.push(InputEvent::Button { button: *button, down: false });
                 }
             }
-        }
-
-        // Relative mouse.
-        let m = &state.mouse;
-        if m.dx != 0 || m.dy != 0 {
-            ev.push(InputEvent::MouseMove { dx: i32::from(m.dx), dy: i32::from(m.dy) });
-        }
-        for (i, button) in MouseButton::ORDER.iter().enumerate() {
-            let (c, o) = (m.buttons[i] != 0, prev.mouse.buttons[i] != 0);
-            if c != o {
-                ev.push(InputEvent::Button { button: *button, down: c });
+            if m.active() {
+                if state.controllers.absolute_mouse != 0 && (m.x, m.y) != (prev.mouse.x, prev.mouse.y) {
+                    ev.push(InputEvent::PointerAbs { x: m.x.round() as i32, y: m.y.round() as i32 });
+                }
+                for (i, button) in MouseButton::MOUSE_ORDER.iter().enumerate() {
+                    if m.buttons[i + 1] != 0 && !self.mouse_held.contains(button) {
+                        self.mouse_held.push(*button);
+                        ev.push(InputEvent::Button { button: *button, down: true });
+                    }
+                }
+                if has_wheel {
+                    ev.push(wheel);
+                }
             }
-        }
-        // Wheel values are deltas consumed by every injection (the service zeroes them).
-        let vy = self.wheel_rest.1 + m.wheel_y * 120.0;
-        let vx = self.wheel_rest.0 + m.wheel_x * 120.0;
-        let (iy, ix) = (vy.trunc() as i32, vx.trunc() as i32);
-        self.wheel_rest = (vx - ix as f32, vy - iy as f32);
-        if iy != 0 || ix != 0 {
-            ev.push(InputEvent::Wheel { vertical: iy, horizontal: ix });
         }
 
         if gamepad_enabled && state.gamepad != prev.gamepad {
             ev.push(InputEvent::Gamepad(state.gamepad));
         }
-        self.prev = Some(*state);
+        self.prev = Some(state);
         ev
+    }
+
+    /// Emits laser-pointer moves and contact presses/releases.
+    ///
+    /// # Arguments
+    /// * `state` - newest state.
+    /// * `prev` - previous state.
+    /// * `ev` - output events (appended to).
+    fn pointers(&mut self, state: &InputState, prev: &InputState, ev: &mut Vec<InputEvent>) {
+        // Contacts that end are released first, so a press by the other pointer lands cleanly.
+        for (i, cur) in state.pointers.iter().enumerate() {
+            if !(cur.in_range() && cur.contact()) {
+                if let Some(button) = self.contact[i].take() {
+                    ev.push(InputEvent::Button { button, down: false });
+                }
+            }
+        }
+        // With a single cursor only one pointer can drive it: a pointer in contact wins.
+        let owner = (0..2).find(|&i| self.contact[i].is_some()).or_else(|| (0..2).find(|&i| state.pointers[i].in_range() && state.pointers[i].contact()));
+        for (i, (cur, old)) in state.pointers.iter().zip(prev.pointers.iter()).enumerate() {
+            if !cur.in_range() || owner.is_some_and(|o| o != i) {
+                continue;
+            }
+            if !old.in_range() || (cur.x, cur.y) != (old.x, old.y) {
+                ev.push(InputEvent::PointerAbs { x: i32::from(cur.x), y: i32::from(cur.y) });
+            }
+            if cur.contact() && self.contact[i].is_none() {
+                let button = if cur.buttons[3] != 0 {
+                    MouseButton::Right
+                } else if cur.buttons[4] != 0 {
+                    MouseButton::Middle
+                } else {
+                    MouseButton::Left
+                };
+                self.contact[i] = Some(button);
+                ev.push(InputEvent::Button { button, down: true });
+            }
+        }
+    }
+
+    /// Applies mouse-mode motion for the time elapsed since the previous tick.
+    ///
+    /// The server moves the cursor by `round(x), round(y)` pixels every millisecond for as long
+    /// as the last packet's values sit in shared memory, so this should be called every few
+    /// milliseconds between packets.
+    ///
+    /// # Arguments
+    /// * `elapsed` - time since the previous call.
+    ///
+    /// # Returns
+    /// An [`InputEvent::MouseMove`] when the cursor should move, else `None`.
+    pub fn tick(&mut self, elapsed: Duration) -> Option<InputEvent> {
+        let s = self.prev.as_ref()?;
+        let m = &s.mouse;
+        let moving = m.active() && s.controllers.absolute_mouse == 0 && !s.pointers.iter().any(|p| p.in_range());
+        let (vx, vy) = (m.x.round() as i32, m.y.round() as i32);
+        if !moving || (vx == 0 && vy == 0) {
+            self.pending_ms = 0.0;
+            return None;
+        }
+        self.pending_ms = (self.pending_ms + elapsed.as_secs_f64() * 1000.0).min(MAX_TICK_MS);
+        let ms = self.pending_ms.floor();
+        self.pending_ms -= ms;
+        let ms = ms as i32;
+        (ms > 0).then_some(InputEvent::MouseMove { dx: vx * ms, dy: vy * ms })
     }
 
     /// Events releasing everything currently held (C#: `IInputInjection.ReleaseInput`).
@@ -170,12 +259,11 @@ impl InputTranslator {
     pub fn release_all(&mut self) -> Vec<InputEvent> {
         let Some(prev) = self.prev.take() else { return Vec::new() };
         let mut ev: Vec<InputEvent> = prev.keyboard.pressed().map(|s| InputEvent::Key { scan: s.scan_code, down: false }).collect();
-        for (i, b) in MouseButton::ORDER.iter().enumerate() {
-            if prev.mouse.buttons[i] != 0 || prev.pointers.iter().any(|p| i < 5 && p.buttons[i] != 0) {
-                ev.push(InputEvent::Button { button: *b, down: false });
-            }
+        for button in self.mouse_held.drain(..).chain(self.contact.iter_mut().filter_map(Option::take)) {
+            ev.push(InputEvent::Button { button, down: false });
         }
         ev.push(InputEvent::Gamepad(GamepadState::default()));
+        self.pending_ms = 0.0;
         ev
     }
 }
@@ -257,20 +345,93 @@ mod tests {
 
     #[test]
     fn key_press_and_release() {
-        let mut t = InputTranslator::new((0, 0));
+        let mut t = InputTranslator::new();
         let mut s = InputState::default();
         s.keyboard.set_slot(0, KeySlot { scan_code: 0x1E, flags: 1 });
-        assert_eq!(t.translate(&s, false), vec![InputEvent::Key { scan: 0x1E, down: true }]);
-        assert!(t.translate(&s, false).is_empty());
+        assert_eq!(t.translate(&s, true, false), vec![InputEvent::Key { scan: 0x1E, down: true }]);
+        assert!(t.translate(&s, true, false).is_empty());
         let s2 = InputState::default();
-        assert_eq!(t.translate(&s2, false), vec![InputEvent::Key { scan: 0x1E, down: false }]);
+        assert_eq!(t.translate(&s2, true, false), vec![InputEvent::Key { scan: 0x1E, down: false }]);
     }
 
     #[test]
-    fn wheel_accumulates_fractions() {
-        let mut t = InputTranslator::new((0, 0));
+    fn mouse_buttons_follow_server_order_and_need_active() {
+        let mut t = InputTranslator::new();
         let mut s = InputState::default();
-        s.mouse.wheel_y = 0.5;
-        assert_eq!(t.translate(&s, false), vec![InputEvent::Wheel { vertical: 60, horizontal: 0 }]);
+        s.mouse.buttons = [0, 1, 0, 0, 0, 0];
+        assert!(t.translate(&s, true, false).is_empty(), "inactive mouse mode ignores presses");
+        s.mouse.buttons = [1, 0, 1, 1, 0, 0];
+        assert_eq!(
+            t.translate(&s, true, false),
+            vec![InputEvent::Button { button: MouseButton::Middle, down: true }, InputEvent::Button { button: MouseButton::Right, down: true }]
+        );
+        // Turning mouse mode off releases what it held.
+        s.mouse.buttons = [0, 0, 1, 1, 0, 0];
+        assert_eq!(
+            t.translate(&s, true, false),
+            vec![InputEvent::Button { button: MouseButton::Middle, down: false }, InputEvent::Button { button: MouseButton::Right, down: false }]
+        );
+    }
+
+    #[test]
+    fn mouse_motion_is_a_velocity() {
+        let mut t = InputTranslator::new();
+        let mut s = InputState::default();
+        s.mouse.buttons[0] = 1;
+        s.mouse.x = 2.4;
+        s.mouse.y = -1.0;
+        assert!(t.translate(&s, true, false).is_empty());
+        assert_eq!(t.tick(Duration::from_millis(5)), Some(InputEvent::MouseMove { dx: 10, dy: -5 }));
+        s.controllers.absolute_mouse = 1;
+        s.mouse.x = 100.0;
+        assert_eq!(t.translate(&s, true, false), vec![InputEvent::PointerAbs { x: 100, y: -1 }]);
+        assert_eq!(t.tick(Duration::from_millis(5)), None);
+    }
+
+    #[test]
+    fn wheel_is_scaled_by_eight() {
+        let mut t = InputTranslator::new();
+        let mut s = InputState::default();
+        s.mouse.buttons[0] = 1;
+        s.mouse.wheel_y = 15;
+        s.mouse.wheel_x = -1;
+        assert_eq!(t.translate(&s, true, false), vec![InputEvent::Wheel { vertical: 120, horizontal: -8 }]);
+    }
+
+    #[test]
+    fn pointer_hover_and_contact() {
+        let mut t = InputTranslator::new();
+        let mut s = InputState::default();
+        s.pointers[1].buttons = [1, 0, 0, 0, 0];
+        s.pointers[1].x = 1920;
+        s.pointers[1].y = 40;
+        assert_eq!(t.translate(&s, true, false), vec![InputEvent::PointerAbs { x: 1920, y: 40 }]);
+        s.pointers[1].buttons = [1, 0, 1, 1, 0];
+        assert_eq!(t.translate(&s, true, false), vec![InputEvent::Button { button: MouseButton::Right, down: true }]);
+        s.pointers[1].buttons = [1, 0, 0, 0, 0];
+        assert_eq!(t.translate(&s, true, false), vec![InputEvent::Button { button: MouseButton::Right, down: false }]);
+    }
+
+    #[test]
+    fn contact_owns_the_cursor() {
+        let mut t = InputTranslator::new();
+        let mut s = InputState::default();
+        s.pointers[0].buttons = [1, 0, 1, 0, 0];
+        s.pointers[0].x = 10;
+        s.pointers[1].buttons = [1, 0, 0, 0, 0];
+        s.pointers[1].x = 500;
+        assert_eq!(
+            t.translate(&s, true, false),
+            vec![InputEvent::PointerAbs { x: 10, y: 0 }, InputEvent::Button { button: MouseButton::Left, down: true }]
+        );
+    }
+
+    #[test]
+    fn non_desktop_only_forwards_gamepad() {
+        let mut t = InputTranslator::new();
+        let mut s = InputState::default();
+        s.pointers[0].buttons = [1, 0, 1, 0, 0];
+        s.gamepad.buttons = 0x1000;
+        assert_eq!(t.translate(&s, false, true), vec![InputEvent::Gamepad(s.gamepad)]);
     }
 }

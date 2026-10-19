@@ -1,23 +1,44 @@
 //! Audio streaming.  C#: `VirtualDesktop.Streamer.LoopbackCapture` (PC → headset) and
 //! `VirtualDesktop.Streamer.Microphone` (headset → PC).
 //!
-//! Audio runs while a session is connected, `StreamerSettings.AudioStreaming` is not `Disabled`
-//! and the PC is the audio source (desktop or VR; video files carry their own audio).
+//! Audio runs while a session is connected and `StreamerSettings.AudioStreaming` is not
+//! `Disabled`.  PC audio is captured only while the PC is the source (desktop or VR — video
+//! files carry their own audio); the microphone is forwarded whenever
+//! `SharedUserSettings.MicPassthrough` is on.  A change of any of these restarts the session,
+//! as the original re-initialises its capture on `AudioStreamingChanged`, `StreamingSourceChanged`
+//! and `MicPassthroughChanged`.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio::sync::mpsc;
-use tracing::{info, warn};
-use vd_platform::audio::{AudioRouting, LoopbackCapture, MicrophonePlayback};
+use tracing::{debug, info, warn};
+use vd_platform::audio::{AudioOptions, AudioSession};
 use vd_protocol::channels::audio::mic_gain;
 use vd_protocol::types::{AudioStreaming, StreamingSource};
 
 use crate::app::App;
 
-fn wanted(app: &App) -> bool {
-    let mode = app.settings.lock().expect("poisoned").audio_streaming;
-    app.state.dynamic.borrow().is_connected && mode != AudioStreaming::Disabled && matches!(app.state.streaming_source(), StreamingSource::Desktop | StreamingSource::VR)
+/// Computes the audio components wanted right now.
+///
+/// # Arguments
+/// * `app` - application context.
+///
+/// # Returns
+/// The options, or `None` when no audio should run.
+fn wanted(app: &App) -> Option<AudioOptions> {
+    if !app.state.dynamic.borrow().is_connected {
+        return None;
+    }
+    let (mode, virtual_driver, manage) = {
+        let s = app.settings.lock().expect("poisoned");
+        (s.audio_streaming, s.use_virtual_audio_driver, s.port.manage_audio_devices)
+    };
+    let capture = mode != AudioStreaming::Disabled && matches!(app.state.streaming_source(), StreamingSource::Desktop | StreamingSource::VR);
+    let microphone = app.state.user.borrow().mic_passthrough;
+    if !capture && !microphone {
+        return None;
+    }
+    Some(AudioOptions { capture, headset_only: mode == AudioStreaming::HeadsetOnly && virtual_driver, microphone, manage_devices: manage })
 }
 
 /// Audio task.
@@ -28,92 +49,65 @@ fn wanted(app: &App) -> bool {
 pub async fn run(app: Arc<App>, mut mic_rx: mpsc::Receiver<Vec<u8>>) {
     let mut dyn_rx = app.state.dynamic.subscribe();
     let mut str_rx = app.state.streamer.subscribe();
-    let mut warned = false;
+    let mut user_rx = app.state.user.subscribe();
+    let mut last_failure: Option<AudioOptions> = None;
     while !app.is_shutting_down() {
-        if !wanted(&app) {
-            // Drain microphone audio that arrives outside a session.
+        let Some(opts) = wanted(&app) else {
+            last_failure = None;
             tokio::select! {
                 _ = dyn_rx.changed() => {}
                 _ = str_rx.changed() => {}
+                _ = user_rx.changed() => {}
+                _ = mic_rx.recv() => {} // drop microphone audio outside a session
+            }
+            continue;
+        };
+        if last_failure == Some(opts) {
+            // Nothing could be started with these options; wait for a change instead of retrying.
+            tokio::select! {
+                _ = dyn_rx.changed() => {}
+                _ = str_rx.changed() => {}
+                _ = user_rx.changed() => {}
                 _ = mic_rx.recv() => {}
             }
             continue;
         }
-        let (headset_only, manage) = {
-            let s = app.settings.lock().expect("poisoned");
-            (s.audio_streaming == AudioStreaming::HeadsetOnly && s.use_virtual_audio_driver, s.port.manage_audio_devices)
-        };
-        let mic_on = app.state.user.borrow().mic_passthrough;
-        let routing = if manage {
-            match AudioRouting::setup(headset_only, mic_on).await {
-                Ok(r) => Some(r),
-                Err(e) => {
-                    if !warned {
-                        warn!(error = %e, "audio device routing unavailable");
-                    }
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        let capture_dev = routing.as_ref().and_then(|r| r.capture_device.clone());
-        let mut capture = match LoopbackCapture::start(capture_dev.as_deref()) {
-            Ok(c) => Some(c),
+        let mut session = match AudioSession::start(opts).await {
+            Ok(s) => s,
             Err(e) => {
-                if !warned {
-                    warn!(error = %e, "PC audio capture unavailable");
-                }
-                None
+                warn!(error = %e, "audio streaming unavailable");
+                last_failure = Some(opts);
+                continue;
             }
         };
-        let mut mic = routing.as_ref().and_then(|r| r.mic_sink.as_deref()).and_then(|sink| MicrophonePlayback::start(sink).map_err(|e| warn!(error = %e, "virtual microphone unavailable")).ok());
-        warned = true;
-        if capture.is_none() && mic.is_none() {
-            if let Some(r) = routing {
-                r.restore().await;
-            }
-            // Nothing works on this platform; wait for the session to end.
-            while wanted(&app) {
-                tokio::select! {
-                    _ = dyn_rx.changed() => {}
-                    _ = str_rx.changed() => {}
-                    _ = mic_rx.recv() => {}
-                }
-            }
-            continue;
-        }
-        info!(capture = capture.is_some(), mic = mic.is_some(), "audio streaming started");
+        info!(capture = session.has_capture(), microphone = session.has_mic(), headset_only = opts.headset_only, "audio streaming started");
+        let mut sent: u64 = 0;
         loop {
             tokio::select! {
-                pkt = async { match capture.as_mut() { Some(c) => c.next().await, None => std::future::pending().await } } => {
-                    match pkt {
-                        Some(p) => { let _ = app.channels.audio.send_pcm(&p).await; }
-                        None => { tokio::time::sleep(Duration::from_millis(200)).await; break; }
-                    }
-                }
-                m = mic_rx.recv() => {
-                    let Some(pcm) = m else { break };
-                    if let Some(player) = mic.as_mut() {
-                        let gain = mic_gain(app.state.user.borrow().mic_volume);
-                        if player.write(&pcm, gain).await.is_err() {
-                            mic = None;
+                pkt = session.next_capture() => match pkt {
+                    Some(p) => {
+                        if app.channels.audio.send_pcm(&p).await.is_ok() {
+                            sent += 1;
+                            if sent == 1 {
+                                debug!("first audio packet sent");
+                            }
                         }
                     }
+                    None => break,
+                },
+                m = mic_rx.recv() => {
+                    let Some(pcm) = m else { break };
+                    let gain = mic_gain(app.state.user.borrow().mic_volume);
+                    if let Err(e) = session.write_mic(&pcm, gain).await {
+                        warn!(error = %e, "microphone playback failed");
+                    }
                 }
-                _ = dyn_rx.changed() => if !wanted(&app) { break },
-                _ = str_rx.changed() => if !wanted(&app) { break },
+                _ = dyn_rx.changed() => if wanted(&app) != Some(opts) { break },
+                _ = str_rx.changed() => if wanted(&app) != Some(opts) { break },
+                _ = user_rx.changed() => if wanted(&app) != Some(opts) { break },
             }
         }
-        if let Some(c) = capture.as_mut() {
-            c.stop().await;
-        }
-        if let Some(m) = mic.as_mut() {
-            m.stop().await;
-        }
-        if let Some(r) = routing {
-            r.restore().await;
-        }
-        info!("audio streaming stopped");
+        session.stop().await;
+        info!(packets = sent, "audio streaming stopped");
     }
 }

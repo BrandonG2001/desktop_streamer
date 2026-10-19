@@ -18,7 +18,7 @@ from usage and still needs confirming against live traffic.
 | `VirtualDesktop.Injector{32,64}.dll`, `VirtualDesktop.LibOVRRT{32,64}_1.dll`, `openxr-oculus-compatibility.dll` | C++ (MinHook) | Oculus-runtime emulation and hooking for VR games | **Not ported** (Windows-only by nature) |
 | `OpenVRDriver/…/driver_VirtualDesktop.dll` | C++ | SteamVR driver | **Not ported**; IPC contract documented in §6 |
 | `OpenXR/virtualdesktop-openxr.dll` (VDXR) | C++ | OpenXR runtime | **Not ported** (VDXR is open source: mbucchia/VirtualDesktop-OpenXR) |
-| `AudioDriver/vdvad.sys`, `GamepadDriver/vdvge.sys`, `MonitorDriver/vdvmd.dll` | Kernel / IddCx drivers | Virtual audio device, virtual gamepad, virtual monitors | Linux replacements: PulseAudio/PipeWire modules and `/dev/uinput`. Virtual monitors are not ported. |
+| `AudioDriver/vdvad.sys`, `GamepadDriver/vdvge.sys`, `MonitorDriver/vdvmd.dll` | Kernel / IddCx drivers | Virtual audio device, virtual gamepad, virtual monitors | Windows: the installed `vdvad.sys` is reused for the microphone (`IKsControl`). Linux: PulseAudio/PipeWire modules and `/dev/uinput`. Virtual monitors are not ported. |
 | `Updater.exe`, `VirtualDesktop.Setup.exe`, `VirtualDesktop.Service.msi` | Installer / updater | — | Not ported |
 | `C:\Program Files\Virtual Desktop\VirtualDesktop.Service.exe` / `Server.exe` | .NET (outside the analysed folder) | SYSTEM service: WCF `IInputInjection`, `IMonitorDuplication`, `IAudioService`, `IVirtualMonitor`, `IServiceManager` | Functions performed in-process (`vd-platform`) |
 
@@ -103,6 +103,11 @@ Bitstreams are Annex-B. When `UseAnnexB == false`, start codes are rewritten as 
 * VR bitrate ceilings per codec;
 * VR render resolutions (partial).
 
+### Audio (observed)
+
+* **PC → headset:** WASAPI loopback of the default render endpoint, converted to 48 kHz stereo s16 with gain 0.9 and sent in 1152-byte packets. In headset-only mode without the virtual speaker the original mutes the endpoint; loopback still captures the mix.
+* **Headset → PC microphone:** the original binds the DirectShow `AM_KSCATEGORY_CAPTURE` filter named "VDVAD Wave" to `IKsControl` and calls `KsProperty` with Set `{15E0F7CE-5521-4214-A1D1-17DEDD428BE9}`, Id 0, Flags `KSPROPERTY_TYPE_SET`, data = 48 kHz mono s16 PCM (≤ 1920 bytes). The driver returns `ERROR_INVALID_FUNCTION` while nothing records from "Microphone (Virtual Desktop Audio)"; the original ignores the result. Verified on Windows by recording the endpoint while pushing a 440 Hz tone.
+
 ## 6. VR driver IPC (documented, not ported)
 
 The drivers and the streamer share named objects. Struct layouts are generated in the scratch notes; sizes are observed.
@@ -115,12 +120,26 @@ The drivers and the streamer share named objects. Struct layouts are generated i
 
 `vd-platform::shm` already implements these names on Windows and on POSIX. A Linux SteamVR driver (`driver_virtualdesktop.so`) would be the next step towards Linux VR.
 
+### Input injection semantics
+
+From `VirtualDesktop.Server.exe` `_0008._0002`. Its injection loop runs every 1 ms over the shared `InputState`, which the streamer overwrites with every headset packet while the desktop is streamed.
+
+* **Laser pointers** (`_0003_0002._0003`, two of them):
+  * `b0 || b1`: the pointer is in range, and a touch contact follows `(x, y)`. The coordinates are physical virtual-desktop pixels, divided only by the DPI-virtualisation factor; no monitor origin is added.
+  * `b2 || b3 || b4`: the contact is down. `b3` makes it a secondary press and `b4` a tertiary one; otherwise it is primary.
+  * The port emulates the touch contacts with the mouse (left/right/middle), and the pointer in contact owns the cursor.
+* **Mouse mode** (`_0003_0002._0002`, bools `b1`–`b6`, floats `x`/`y`, sbytes `w1`/`w2`):
+  * `b1` turns mouse mode on. Presses, motion and the wheel are ignored without it, but releases are still delivered.
+  * `b2`–`b6` are LEFT, MIDDLE, RIGHT, XBUTTON1 and XBUTTON2, edge-triggered.
+  * `x`/`y` persist between packets and the server moves the cursor by `round(x), round(y)` every millisecond, which makes them a velocity in px/ms. When the trailing bool of the controller-button struct (`_0003_0002._0001`, offset 0x62 of `InputState`) is set, they are instead an absolute position, scaled by 65535 / primary-screen size.
+  * `w1` is HWHEEL and `w2` is WHEEL, each value × 8, consumed once per packet. While a laser pointer is in range they become `InjectScrollInput` instead.
+* **Gamepad:** the `XINPUT_GAMEPAD`-shaped block goes straight to ViGEm. Outside desktop streaming the streamer copies only the gamepad and controller blocks.
+
 ## 7. Known uncertainties
 
-* **Inferred field meanings:** pointer and mouse button order, `HapticFeedback.extra`, `VrFrameInfo` floats, and the `NetworkConnectionType` member mapping.
+* **Inferred field meanings:** `HapticFeedback.extra`, `VrFrameInfo` floats, and the `NetworkConnectionType` member mapping.
 * **Keyboard struct size:** the explicit-layout `_0083_0002._0004` declares `Size = 24`, but its overlapping 4-byte slots make the marshalled size 26 (assumed). If the headset sends 4932 bytes instead of 4936, every offset after the keyboard block shifts by 2 to 4 bytes. The data channel logs a warning in that case.
 * **SOAP:** namespaces and element order are inferred.
-* **Wheel values:** assumed to be per-packet deltas (the service zeroes them after injecting).
 * **Encoder latency:** the CLI backend reports one frame interval, not a measured value.
 
 ## 8. Porting notes
