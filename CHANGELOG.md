@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.0
+
+* **Driver-free PC audio on Windows.** "VR headset only" no longer needs the Virtual Desktop audio driver:
+  * Every application except the streamer is recorded with process loopback, whichever device it plays on.
+  * Every playback device is muted with its volume at zero until the headset disconnects. Bluetooth headphones that ignore a plain mute are silenced too.
+  * Mute and volume are restored afterwards, including after a crash.
+  * With the driver installed and "Use virtual audio driver" on, the original virtual-speaker routing is still used.
+  * On Windows 10 builds without process loopback, the default playback device is recorded instead.
+* **Microphone passthrough without the Virtual Desktop driver** via a virtual audio cable (VB-Audio Virtual Cable, Hi-Fi Cable or VoiceMeeter):
+  * The headset microphone is played into the cable's input, and "Auto-select microphone" makes the cable's output the default recording device.
+  * The cable is never muted by "VR headset only".
+  * A new OPTIONS → Microphone picker chooses between Automatic, the Virtual Desktop driver and any playback device, and ABOUT shows where the microphone goes.
+
 ## 1.0.0
 
 This is the first release of the Rust port of Virtual Desktop Streamer 1.34.18. It is wire-compatible with the Virtual Desktop app on the headset.

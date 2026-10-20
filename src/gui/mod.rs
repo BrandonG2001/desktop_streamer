@@ -208,6 +208,8 @@ struct SettingsWindow {
     system: Arc<OnceLock<SystemInfo>>,
     /// Cached video-library folders.
     video_folders: Option<Vec<VideoFolder>>,
+    /// Cached microphone choices: Virtual Desktop driver present, and cable playback devices.
+    mic_targets: Option<(bool, Vec<(String, String)>)>,
 }
 
 impl SettingsWindow {
@@ -294,6 +296,7 @@ impl SettingsWindow {
             quitting: false,
             system,
             video_folders: None,
+            mic_targets: None,
         }
     }
 
@@ -461,6 +464,9 @@ impl SettingsWindow {
                 settings.selected_tab = tab.index();
                 if tab == Tab::Media {
                     self.video_folders = None;
+                }
+                if tab == Tab::Options {
+                    self.mic_targets = None;
                 }
             }
         }

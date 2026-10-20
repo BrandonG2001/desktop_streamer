@@ -11,13 +11,15 @@
 //! ```text
 //! cargo run --example audio_probe -- 5
 //! cargo run --example audio_probe -- 10 headset-only
+//! cargo run --example audio_probe -- 10 headset-only driver-free   # ignore the Virtual Desktop driver
+//! cargo run --example audio_probe -- 10 "mic={0.0.0.00000000}.{…}"   # microphone into that playback device
 //! ```
 
 use std::time::{Duration, Instant};
 
 use vd_platform::audio::{AudioOptions, AudioSession};
 
-/// Entry point: `audio_probe [seconds] [headset-only]`.
+/// Entry point: `audio_probe [seconds] [headset-only] [driver-free] [mic=<device>]`.
 ///
 /// # Errors
 /// Never; failures are printed.
@@ -29,10 +31,11 @@ async fn main() {
     let opts = AudioOptions {
         capture: true,
         headset_only,
-        virtual_speaker: true,
+        virtual_speaker: !std::env::args().any(|a| a == "driver-free"),
         voicemeeter: false,
         microphone: true,
         select_microphone: false,
+        microphone_device: std::env::args().find_map(|a| a.strip_prefix("mic=").map(str::to_owned)).unwrap_or_else(|| "auto".to_owned()),
         manage_devices: true,
     };
     let mut session = match AudioSession::start(opts).await {
@@ -42,7 +45,7 @@ async fn main() {
             return;
         }
     };
-    println!("capture={} microphone={}", session.has_capture(), session.has_mic());
+    println!("capture={} microphone={} ({})", session.has_capture(), session.has_mic(), session.mic_name().unwrap_or("none"));
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let (mut packets, mut peak) = (0u64, 0i16);
     let mut phase = 0f32;

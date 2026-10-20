@@ -56,6 +56,9 @@ pub struct DynamicState {
     pub status: ConnectionStatus,
     /// Encoder detection has finished (successfully or not).
     pub media_ready: bool,
+    /// Where headset microphone audio goes while passthrough runs (`None` when off), or
+    /// `Some("")` when passthrough is on but no virtual microphone is available.
+    pub microphone: Option<String>,
 }
 
 /// All shared state of the application.

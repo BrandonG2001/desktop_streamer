@@ -7,7 +7,7 @@
 
 #define AppName "Virtual Desktop Streamer (Rust)"
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.1.0"
 #endif
 #define AppExe "desktop_streamer.exe"
 #define AppPublisher "Brandon Graeber"
@@ -99,7 +99,7 @@ begin
   Result := OnPath('yt-dlp.exe') or FileExists(ExpandConstant('{localappdata}\Microsoft\WinGet\Links\yt-dlp.exe'));
 end;
 
-{ The Virtual Desktop audio driver (vdvad.sys) provides PC audio routing and the microphone. }
+{ The Virtual Desktop audio driver (vdvad.sys) provides the virtual microphone. }
 function AudioDriverInstalled: Boolean;
 begin
   Result := RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\vdvad_WaveExtensible');
@@ -109,7 +109,8 @@ procedure CurrentStepChanged(CurStep: TSetupStep);
 begin
   if (CurStep = ssPostInstall) and (not AudioDriverInstalled) and (not WizardSilent) then
     MsgBox('The Virtual Desktop audio driver was not found.' + #13#10#13#10 +
-           'Video and input work without it, but streaming PC audio in "VR headset only" mode and ' +
-           'microphone passthrough need the driver installed by the official Virtual Desktop Streamer ' +
-           '(https://www.vrdesktop.net).', mbInformation, MB_OK);
+           'Video, input and PC audio work without it (in "VR headset only" mode the PC speakers are ' +
+           'muted while streaming). For microphone passthrough, install either the official Virtual ' +
+           'Desktop Streamer or a virtual audio cable such as VB-Audio Virtual Cable ' +
+           '(https://vb-audio.com/Cable/), then select "CABLE Output" as microphone in your apps.', mbInformation, MB_OK);
 end;

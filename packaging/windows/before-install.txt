@@ -1,4 +1,4 @@
-Virtual Desktop Streamer (Rust) 1.0.0
+Virtual Desktop Streamer (Rust) 1.1.0
 
 This is an independent Rust port of the Virtual Desktop Streamer that lets a Quest (or other
 Virtual Desktop headset) stream and control this computer's desktop.
@@ -11,8 +11,10 @@ Before you continue:
 * FFmpeg is required for video streaming. If it is not installed, setup can install it for you
   with winget (Gyan.FFmpeg). A copy placed next to desktop_streamer.exe is also used.
 
-* PC audio routing ("VR headset only") and microphone passthrough use the Virtual Desktop audio
-  driver that comes with the official Virtual Desktop Streamer installation.
+* PC audio works on its own: in "VR headset only" mode the PC speakers are muted while a headset
+  is connected and restored afterwards. Microphone passthrough needs a driver: either the
+  Virtual Desktop audio driver from the official Virtual Desktop Streamer, or a virtual audio
+  cable such as VB-Audio Virtual Cable (https://vb-audio.com/Cable/).
 
 * VR game streaming (SteamVR / OpenXR) is not supported by this version; desktop streaming,
   video playback, audio, microphone, keyboard, mouse and laser-pointer input are.

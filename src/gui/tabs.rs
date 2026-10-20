@@ -431,9 +431,14 @@ impl SettingsWindow {
                     &mut s.audio_streaming,
                     &[(AudioStreaming::Disabled, "Computer only"), (AudioStreaming::HeadsetOnly, "VR headset only"), (AudioStreaming::HeadsetAndComputer, "VR headset & computer")],
                 );
-                ui.checkbox(&mut s.use_virtual_audio_driver, "Use virtual audio driver").on_hover_text("Enable this option if you experience issues streaming audio");
+                ui.checkbox(&mut s.use_virtual_audio_driver, "Use virtual audio driver")
+                    .on_hover_text("Route PC audio through the Virtual Desktop audio driver when it is installed.\nWhen off (or without the driver), all PC speakers are muted while streaming instead.");
                 ui.add_enabled(s.use_virtual_audio_driver, egui::Checkbox::new(&mut s.voicemeeter_mode, "VoiceMeeter mode"))
                     .on_hover_text("Enable this option to allow Virtual Desktop to work with VoiceMeeter");
+                if cfg!(windows) {
+                    ui.add_space(8.0);
+                    self.microphone_picker(ui, s);
+                }
             });
             ui.vertical(|ui| {
                 ui.checkbox(&mut s.allow_remote_connections, "Allow remote connections");
@@ -459,6 +464,41 @@ impl SettingsWindow {
         ui.add_space(14.0);
         if ui.button("Reset to Defaults").clicked() {
             s.reset_options();
+        }
+    }
+
+    /// "Microphone" choice: where the headset microphone goes on Windows (`Port.MicrophoneDevice`).
+    ///
+    /// # Arguments
+    /// * `ui` - column UI.
+    /// * `s` - settings being edited.
+    fn microphone_picker(&mut self, ui: &mut egui::Ui, s: &mut StreamerSettings) {
+        use vd_platform::audio::{MIC_AUTO, MIC_VDVAD};
+        let (driver, targets) = self.mic_targets.get_or_insert_with(|| (vd_platform::audio::has_virtual_desktop_driver(), vd_platform::audio::microphone_targets())).clone();
+        let mut options: Vec<(String, String)> = vec![(MIC_AUTO.to_owned(), "Automatic".to_owned())];
+        if driver {
+            options.push((MIC_VDVAD.to_owned(), "Virtual Desktop driver".to_owned()));
+        }
+        options.extend(targets.iter().cloned());
+        let current = options.iter().find(|(id, _)| *id == s.port.microphone_device).map_or_else(|| "Unavailable device".to_owned(), |(_, n)| n.clone());
+        section(ui, "Microphone");
+        egui::ComboBox::from_id_salt("microphone")
+            .width(180.0)
+            .truncate()
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                for (id, name) in &options {
+                    ui.selectable_value(&mut s.port.microphone_device, id.clone(), name.as_str());
+                }
+            })
+            .response
+            .on_hover_text(
+                "Where the headset microphone goes.\nAutomatic uses the Virtual Desktop driver if it is installed, otherwise a virtual audio cable\n(e.g. VB-Audio Virtual Cable: apps then record from \"CABLE Output\").",
+            );
+        let has_cable = targets.iter().any(|(_, n)| n.contains("CABLE") || n.contains("VoiceMeeter"));
+        if !driver && !has_cable {
+            ui.label(RichText::new("No virtual microphone found.").size(12.0).color(theme::WARNING));
+            ui.hyperlink_to(RichText::new("Get VB-Audio Virtual Cable (free)").size(12.0), "https://vb-audio.com/Cable/");
         }
     }
 
@@ -622,6 +662,15 @@ impl SettingsWindow {
             ("PC Ethernet:", ethernet.to_owned(), None),
             ("Auto Adjust Bitrate:", yes_no(s.auto_adjust_bitrate), None),
             ("Remote Routing:", routing.to_owned(), None),
+            (
+                "Microphone:",
+                match &d.microphone {
+                    None => dash(),
+                    Some(m) if m.is_empty() => "Unavailable (no virtual microphone)".to_owned(),
+                    Some(m) => m.clone(),
+                },
+                Some("Where microphone passthrough from the headset is sent"),
+            ),
         ];
         egui::Grid::new("about").num_columns(2).spacing([16.0, 5.0]).min_col_width(140.0).show(ui, |ui| {
             for (label, value, tip) in rows {

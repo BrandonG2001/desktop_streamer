@@ -29,9 +29,9 @@ fn wanted(app: &App) -> Option<AudioOptions> {
     if !app.state.dynamic.borrow().is_connected {
         return None;
     }
-    let (mode, virtual_speaker, voicemeeter, select_microphone, manage) = {
+    let (mode, virtual_speaker, voicemeeter, select_microphone, manage, microphone_device) = {
         let s = app.settings.lock().expect("poisoned");
-        (s.audio_streaming, s.use_virtual_audio_driver, s.voicemeeter_mode, s.auto_select_microphone, s.port.manage_audio_devices)
+        (s.audio_streaming, s.use_virtual_audio_driver, s.voicemeeter_mode, s.auto_select_microphone, s.port.manage_audio_devices, s.port.microphone_device.clone())
     };
     let capture = mode != AudioStreaming::Disabled && matches!(app.state.streaming_source(), StreamingSource::Desktop | StreamingSource::VR);
     let microphone = app.state.user.borrow().mic_passthrough;
@@ -45,6 +45,7 @@ fn wanted(app: &App) -> Option<AudioOptions> {
         voicemeeter: virtual_speaker && voicemeeter,
         microphone,
         select_microphone,
+        microphone_device,
         manage_devices: manage,
     })
 }
@@ -70,7 +71,7 @@ pub async fn run(app: Arc<App>, mut mic_rx: mpsc::Receiver<Vec<u8>>) {
             }
             continue;
         };
-        if last_failure == Some(opts) {
+        if last_failure.as_ref() == Some(&opts) {
             // Nothing could be started with these options; wait for a change instead of retrying.
             tokio::select! {
                 _ = dyn_rx.changed() => {}
@@ -80,14 +81,19 @@ pub async fn run(app: Arc<App>, mut mic_rx: mpsc::Receiver<Vec<u8>>) {
             }
             continue;
         }
-        let mut session = match AudioSession::start(opts).await {
+        let mut session = match AudioSession::start(opts.clone()).await {
             Ok(s) => s,
             Err(e) => {
                 warn!(error = %e, "audio streaming unavailable");
+                if opts.microphone {
+                    app.state.dynamic.send_modify(|d| d.microphone = Some(String::new()));
+                }
                 last_failure = Some(opts);
                 continue;
             }
         };
+        let mic = opts.microphone.then(|| session.mic_name().unwrap_or_default().to_owned());
+        app.state.dynamic.send_modify(|d| d.microphone = mic);
         info!(capture = session.has_capture(), microphone = session.has_mic(), headset_only = opts.headset_only, "audio streaming started");
         let mut sent: u64 = 0;
         loop {
@@ -110,12 +116,13 @@ pub async fn run(app: Arc<App>, mut mic_rx: mpsc::Receiver<Vec<u8>>) {
                         warn!(error = %e, "microphone playback failed");
                     }
                 }
-                _ = dyn_rx.changed() => if wanted(&app) != Some(opts) { break },
-                _ = str_rx.changed() => if wanted(&app) != Some(opts) { break },
-                _ = user_rx.changed() => if wanted(&app) != Some(opts) { break },
+                _ = dyn_rx.changed() => if wanted(&app).as_ref() != Some(&opts) { break },
+                _ = str_rx.changed() => if wanted(&app).as_ref() != Some(&opts) { break },
+                _ = user_rx.changed() => if wanted(&app).as_ref() != Some(&opts) { break },
             }
         }
         session.stop().await;
+        app.state.dynamic.send_modify(|d| d.microphone = None);
         info!(packets = sent, "audio streaming stopped");
     }
 }

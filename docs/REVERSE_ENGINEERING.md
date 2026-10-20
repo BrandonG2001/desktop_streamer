@@ -111,9 +111,20 @@ Bitstreams are Annex-B. When `UseAnnexB == false`, start codes are rewritten as 
     * The port switches the default with `IPolicyConfig` (`CLSID_PolicyConfigClient`, vtable slots 13–14).
     * It records the previous defaults in a temp file so that a crash is undone at the next start. Verified on Windows: a played sound is captured from the virtual device, and the previous default comes back afterwards.
   * **VoiceMeeter mode:** the virtual device is recorded but not made the default.
-  * **Headset only without the virtual driver:** the original mutes the default endpoint (`IsMuted = true`), and loopback still captures the mix.
+  * **Headset only without the virtual driver:** the original mutes the default endpoint (`IsMuted = true`), and loopback still captures the mix. That leaves apps on other devices audible, and some Bluetooth headphones ignore the mute.
+    * The port therefore uses a driver-free route here, and also when "Use virtual audio driver" is off.
+    * It records every process except itself with `ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK)` and `PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE`, as 48 kHz s16 with event callback. This needs Windows 10 build 20348 or later; older builds fall back to default-endpoint loopback.
+    * It mutes **every** active render endpoint and sets its volume to 0, saving the previous values to a temp file for crash recovery.
+    * Verified on Windows: a played sound is captured at full level while all four endpoints read `mute=True volume=0.00`, and every value comes back exactly, also after the process is killed.
   * **"VR headset & computer":** the default endpoint is recorded unchanged.
 * **Auto-select microphone:** `SetVirtualAudioDeviceCapture` makes **Microphone (Virtual Desktop Audio)** the default recording device while microphone passthrough runs, and the port does the same.
+* **Headset → PC microphone without the driver (port only):** Windows has no user-mode way to create a capture endpoint, so the port plays the microphone into the playback side of a *virtual audio cable*.
+  * It renders 48 kHz mono s16 with `AUTOCONVERTPCM`, using the same 80 ms backlog limit as the driver path.
+  * Known cables are matched by device name: "CABLE Input"/"CABLE Output", Hi-Fi Cable, CABLE-A/B, and VoiceMeeter (Aux/VAIO3) Input/Output.
+  * The cable's recording side becomes the default microphone when "Auto-select microphone" is on.
+  * The cable is excluded from the driver-free speaker silencing.
+  * `Port.MicrophoneDevice` selects `auto` (driver, then cable), `vdvad`, or a playback endpoint id.
+  * Verified on Windows by pointing it at a real playback device: its peak meter reads 0.244 (= the probe's 8000/32767 tone) while every other device is silenced.
 * **Headset → PC microphone:** the original binds the DirectShow `AM_KSCATEGORY_CAPTURE` filter named "VDVAD Wave" to `IKsControl` and calls `KsProperty` with Set `{15E0F7CE-5521-4214-A1D1-17DEDD428BE9}`, Id 0, Flags `KSPROPERTY_TYPE_SET`, data = 48 kHz mono s16 PCM (≤ 1920 bytes). The driver returns `ERROR_INVALID_FUNCTION` while nothing records from "Microphone (Virtual Desktop Audio)"; the original ignores the result. Verified on Windows by recording the endpoint while pushing a 440 Hz tone.
 
 ## 6. VR driver IPC (documented, not ported)

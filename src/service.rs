@@ -22,6 +22,8 @@ use crate::{audio_task, connection, desktop, dispatch, input_task, videos};
 /// # Returns
 /// The shared context.
 pub fn start(settings: StreamerSettings, direct: bool) -> Arc<App> {
+    // Restore speakers / default devices if a previous run crashed mid-session.
+    vd_platform::audio::recover();
     let (app, rx) = App::new(settings, direct);
     {
         let monitors = desktop::list_monitors((1920, 1080));

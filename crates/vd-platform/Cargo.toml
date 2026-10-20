@@ -18,6 +18,7 @@ libc = "0.2.155"
 [target.'cfg(windows)'.dependencies]
 # COM-based APIs: audio (WASAPI loopback, endpoint volume, DirectShow, IKsControl) and DXGI adapter names.
 windows = { version = "0.58.0", features = [
+    "implement",
     "Win32_Foundation",
     "Win32_Graphics_Dxgi",
     "Win32_Media_Audio",
@@ -30,6 +31,8 @@ windows = { version = "0.58.0", features = [
     "Win32_System_Ole",
     "Win32_System_Registry",
 ] }
+# Needed by the `#[implement]` macro (COM callbacks such as process-loopback activation).
+windows-core = "0.58.0"
 windows-sys = { version = "0.59.0", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

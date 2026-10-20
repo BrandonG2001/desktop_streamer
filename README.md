@@ -24,9 +24,22 @@ Download the packages from the [latest release](https://github.com/BrandonG2001/
   `./install.sh --uinput`. This installs to `~/.local` with a menu entry, and grants `/dev/uinput`
   access for input injection.
 
-PC-audio routing ("VR headset only") and the microphone on Windows use the audio driver installed by
-the official [Virtual Desktop Streamer](https://www.vrdesktop.net). Quit the official streamer
-before starting this one, because they share ports and hotkeys.
+PC audio needs no driver: in "VR headset only" mode every application is recorded with Windows
+process loopback, and all PC speakers are muted until the headset disconnects. When the official
+[Virtual Desktop Streamer](https://www.vrdesktop.net) driver is present, "Use virtual audio
+driver" routes audio through its virtual speakers instead, like the original.
+
+Windows cannot create a microphone without a driver, so microphone passthrough uses one of two
+drivers:
+
+* the Virtual Desktop driver, if it is installed; or
+* a virtual audio cable such as [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) (free).
+  * The headset microphone is played into "CABLE Input", and apps record from "CABLE Output".
+  * "Auto-select microphone" makes "CABLE Output" the default microphone while you are connected.
+
+OPTIONS → Microphone selects the target ("Automatic" picks the driver, then a known cable).
+
+Quit the official streamer before starting this one, because they share ports and hotkeys.
 
 ## Building packages
 

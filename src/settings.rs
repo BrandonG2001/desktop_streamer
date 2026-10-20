@@ -72,6 +72,15 @@ pub struct PortOptions {
     /// Create PulseAudio/PipeWire virtual devices.
     #[serde(rename = "ManageAudioDevices", default = "t")]
     pub manage_audio_devices: bool,
+    /// Where the headset microphone goes on Windows: `auto` (Virtual Desktop driver, else a
+    /// virtual cable), `vdvad`, or the endpoint id of a virtual cable's playback device.
+    #[serde(rename = "MicrophoneDevice", default = "mic_auto")]
+    pub microphone_device: String,
+}
+
+/// Serde default for `Port.MicrophoneDevice`.
+fn mic_auto() -> String {
+    vd_platform::audio::MIC_AUTO.to_owned()
 }
 
 impl Default for PortOptions {
@@ -92,6 +101,7 @@ impl Default for PortOptions {
             reported_version: "1.34.18.0".into(),
             keyframe_interval_seconds: 2,
             manage_audio_devices: true,
+            microphone_device: mic_auto(),
         }
     }
 }

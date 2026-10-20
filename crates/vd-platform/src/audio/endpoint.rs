@@ -93,22 +93,48 @@ fn reg_dword(key: HKEY, sub: &str, name: &str) -> Option<u32> {
     (rc == ERROR_SUCCESS).then_some(v)
 }
 
-/// Finds the driver's endpoint of a flow, including hidden ones (which
-/// `IMMDeviceEnumerator::EnumAudioEndpoints` does not list).
+/// `PKEY_Device_DeviceDesc` (the device name, e.g. "Speakers" or "CABLE Input") under `Properties`.
+const PKEY_DEVICE_DESC: &str = "{a45c254e-df1c-4efd-8020-67d146a850e0},2";
+
+/// An audio endpoint as recorded by the audio service in the registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndpointInfo {
+    /// Endpoint id (`{0.0.0.00000000}.{guid}` for playback, `{0.0.1.00000000}.{guid}` for recording).
+    pub id: String,
+    /// Device name, e.g. `CABLE Input`.
+    pub name: String,
+    /// Interface (adapter) name, e.g. `VB-Audio Virtual Cable`.
+    pub interface: String,
+    /// Hidden with `SetEndpointVisibility(false)`.
+    pub hidden: bool,
+}
+
+impl EndpointInfo {
+    /// Name as Windows shows it, e.g. `CABLE Input (VB-Audio Virtual Cable)`.
+    ///
+    /// # Returns
+    /// The friendly name.
+    pub fn friendly_name(&self) -> String {
+        if self.interface.is_empty() { self.name.clone() } else { format!("{} ({})", self.name, self.interface) }
+    }
+}
+
+/// Lists the present endpoints of a flow, including hidden ones (which
+/// `IMMDeviceEnumerator::EnumAudioEndpoints` does not return).  Needs no COM.
 ///
 /// # Arguments
 /// * `flow` - render or capture.
 ///
 /// # Returns
-/// `(endpoint id, hidden)`, or `None` when the driver is not installed.
-pub fn find_virtual_endpoint(flow: EDataFlow) -> Option<(String, bool)> {
+/// Active endpoints (`DEVICE_STATE_ACTIVE`, possibly hidden), in registry order.
+pub fn list_endpoints(flow: EDataFlow) -> Vec<EndpointInfo> {
     let (path, prefix) = flow_info(flow);
     let mut key = HKEY::default();
     // SAFETY: opening a read-only key; closed below.
     if unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, &HSTRING::from(path), 0, KEY_READ, &mut key) } != ERROR_SUCCESS {
-        return None;
+        return Vec::new();
     }
-    let mut found = None;
+    let mut out = Vec::new();
     for i in 0.. {
         let mut name = [0u16; 128];
         let mut len = name.len() as u32;
@@ -117,19 +143,34 @@ pub fn find_virtual_endpoint(flow: EDataFlow) -> Option<(String, bool)> {
             break;
         }
         let guid = String::from_utf16_lossy(&name[..len as usize]);
-        let iface = reg_string(key, &format!(r"{guid}\Properties"), PKEY_INTERFACE_NAME);
         let state = reg_dword(key, &guid, "DeviceState").unwrap_or(0);
-        // Only present devices (DEVICE_STATE_ACTIVE, possibly hidden).
-        if iface.as_deref() == Some(VDVAD_INTERFACE_NAME) && state & 0xF == 1 {
-            found = Some((format!("{prefix}{guid}"), state & DEVICE_STATE_HIDDEN != 0));
-            break;
+        if state & 0xF != 1 {
+            continue;
         }
+        let props = format!(r"{guid}\Properties");
+        out.push(EndpointInfo {
+            id: format!("{prefix}{guid}"),
+            name: reg_string(key, &props, PKEY_DEVICE_DESC).unwrap_or_default(),
+            interface: reg_string(key, &props, PKEY_INTERFACE_NAME).unwrap_or_default(),
+            hidden: state & DEVICE_STATE_HIDDEN != 0,
+        });
     }
     // SAFETY: closing the key opened above.
     unsafe {
         let _ = RegCloseKey(key);
     }
-    found
+    out
+}
+
+/// Finds the Virtual Desktop driver's endpoint of a flow (including a hidden one).
+///
+/// # Arguments
+/// * `flow` - render or capture.
+///
+/// # Returns
+/// `(endpoint id, hidden)`, or `None` when the driver is not installed.
+pub fn find_virtual_endpoint(flow: EDataFlow) -> Option<(String, bool)> {
+    list_endpoints(flow).into_iter().find(|e| e.interface == VDVAD_INTERFACE_NAME).map(|e| (e.id, e.hidden))
 }
 
 /// Raw vtable of `IPolicyConfig` (only the slots used here are typed).
