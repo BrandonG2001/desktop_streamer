@@ -12,6 +12,21 @@ use vd_platform::display::MonitorInfo;
 use vd_protocol::settings::{SharedMobileSettings, SharedStreamerSettings, SharedUserSettings};
 use vd_protocol::types::{NetworkConnectionType, RoutingStatus, StreamingSource};
 
+/// Connection progress shown by the notification-area icon.  C#: `ConnectionManager` state
+/// (`_001C_0002._0003`) behind `UpdateNotifyIconAndText`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConnectionStatus {
+    /// Not registered (no account, or between retries).
+    #[default]
+    Disconnected,
+    /// Registering with vrdesktop.net / connecting to the relay.
+    Connecting,
+    /// Registered; waiting for a headset to connect.
+    Waiting,
+    /// A headset is connected.
+    Connected,
+}
+
 /// Runtime-only state.  C#: `VirtualDesktop.Streamer.DynamicSettings`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DynamicState {
@@ -37,6 +52,10 @@ pub struct DynamicState {
     pub routing_status: RoutingStatus,
     /// Session is encrypted (`IsLocalTrafficEncrypted`).
     pub encrypted: bool,
+    /// Connection progress (tray icon).
+    pub status: ConnectionStatus,
+    /// Encoder detection has finished (successfully or not).
+    pub media_ready: bool,
 }
 
 /// All shared state of the application.

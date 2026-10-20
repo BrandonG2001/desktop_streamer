@@ -62,7 +62,8 @@ pub fn machine_id() -> Option<String> {
     }
     #[cfg(windows)]
     {
-        let out = std::process::Command::new("reg").args(["query", r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "/v", "ProductId"]).output().ok()?;
+        use std::os::windows::process::CommandExt;
+        let out = std::process::Command::new("reg").creation_flags(crate::system::CREATE_NO_WINDOW).args(["query", r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "/v", "ProductId"]).output().ok()?;
         let text = String::from_utf8_lossy(&out.stdout);
         return text.lines().find(|l| l.contains("ProductId")).and_then(|l| l.split_whitespace().last()).map(str::to_owned);
     }

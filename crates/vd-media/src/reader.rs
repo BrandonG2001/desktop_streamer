@@ -94,7 +94,7 @@ impl VideoFilePlayback {
         };
         let (tx, rx) = mpsc::channel(32);
 
-        let mut vcmd = Command::new(&ff.ffmpeg);
+        let mut vcmd = crate::command(&ff.ffmpeg);
         common(&mut vcmd);
         vcmd.args(["-map", "0:v:0", "-an", "-sn", "-c:v", "copy", "-bsf:v", bsf, "-f", fmt, "pipe:1"]);
         let mut vchild = vcmd.spawn()?;
@@ -134,7 +134,7 @@ impl VideoFilePlayback {
             if (speed - 1.0).abs() > f32::EPSILON {
                 af.push_str(&format!(",atempo={speed:.1}"));
             }
-            let mut acmd = Command::new(&ff.ffmpeg);
+            let mut acmd = crate::command(&ff.ffmpeg);
             common(&mut acmd);
             acmd.args(["-map", &format!("0:a:{idx}"), "-vn", "-sn", "-af", &af, "-ac", "2", "-ar", "48000", "-f", "s16le", "pipe:1"]);
             match acmd.spawn() {

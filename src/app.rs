@@ -2,9 +2,9 @@
 //! `StreamerManager` and the `SettingsBase<T>.Default` singletons of the original.
 
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Notify, mpsc, watch};
 use tracing::{info, warn};
 use vd_media::codec::{Backend, EncoderCaps, detect_backend, probe_caps};
 use vd_media::version::Ffmpeg;
@@ -82,8 +82,8 @@ pub struct App {
     pub state: StateHub,
     /// Channels.
     pub channels: Channels,
-    /// FFmpeg/encoder (None when FFmpeg is unavailable — video streaming is then disabled).
-    pub media: Option<MediaEnv>,
+    /// FFmpeg and encoder, set once detection finishes (`None` until then or if none works).
+    pub media: OnceLock<MediaEnv>,
     /// Latest headset frame index (updated for every state packet; kept outside the watch
     /// channels to avoid waking every task at the headset frame rate).
     pub headset_frame: AtomicI32,
@@ -95,6 +95,8 @@ pub struct App {
     pub shutdown: watch::Sender<bool>,
     /// Skip the rendezvous service and listen directly (development mode).
     pub direct_mode: bool,
+    /// Wakes the connection manager to re-register (accounts or connection options changed).
+    pub reconnect: Notify,
 }
 
 /// Receivers created together with the [`App`].
@@ -108,16 +110,16 @@ pub struct AppReceivers {
 }
 
 impl App {
-    /// Builds the context.
+    /// Builds the context.  Media detection runs separately (see [`App::set_media`]) so the
+    /// settings window can appear immediately.
     ///
     /// # Arguments
     /// * `settings` - loaded settings.
-    /// * `media` - detected media environment.
     /// * `direct_mode` - listen without the rendezvous service.
     ///
     /// # Returns
     /// The shared context and the receivers consumed by the tasks.
-    pub fn new(settings: StreamerSettings, media: Option<MediaEnv>, direct_mode: bool) -> (Arc<Self>, AppReceivers) {
+    pub fn new(settings: StreamerSettings, direct_mode: bool) -> (Arc<Self>, AppReceivers) {
         let (messaging, messages) = MessagingClient::new();
         let (data, states) = DataChannel::new();
         let (video, gaze) = VideoChannel::new();
@@ -125,29 +127,67 @@ impl App {
         let (peer_tx, peers) = mpsc::unbounded_channel();
         let (video_tx, video_rx) = mpsc::unbounded_channel();
         let state = StateHub::new();
-        if let Some(m) = &media {
-            state.dynamic.send_modify(|d| {
-                d.adapter_name = format!("{:?} via FFmpeg {}.{}", m.backend, m.ffmpeg.version.major, m.ffmpeg.version.minor);
-                d.has_hardware_encoder = m.backend.is_hardware();
-            });
-            state.streamer.send_modify(|s| {
-                s.adapter_name = Some(format!("{:?}", m.backend));
-                s.adapter_is_amd = m.backend == Backend::Amf;
-            });
-        }
         state.streamer.send_modify(|s| s.auto_adjust_bitrate = settings.auto_adjust_bitrate);
         let app = Arc::new(Self {
             settings: Mutex::new(settings),
             state,
             channels: Channels { messaging, data, video, audio },
-            media,
+            media: OnceLock::new(),
             headset_frame: AtomicI32::new(0),
             peer_tx,
             video_tx,
             shutdown: watch::channel(false).0,
             direct_mode,
+            reconnect: Notify::new(),
         });
         (app, AppReceivers { inbound: Inbound { messages, states, gaze, mic }, peers, video: video_rx })
+    }
+
+    /// Records the result of encoder detection and publishes it to the shared state.
+    ///
+    /// # Arguments
+    /// * `media` - detected environment, or `None` when FFmpeg / encoders are unavailable.
+    pub fn set_media(&self, media: Option<MediaEnv>) {
+        if let Some(m) = &media {
+            self.state.dynamic.send_modify(|d| {
+                d.adapter_name = format!("{:?} via FFmpeg {}.{}", m.backend, m.ffmpeg.version.major, m.ffmpeg.version.minor);
+                d.has_hardware_encoder = m.backend.is_hardware();
+            });
+            self.state.streamer.send_modify(|s| {
+                s.adapter_name = Some(format!("{:?}", m.backend));
+                s.adapter_is_amd = m.backend == Backend::Amf;
+            });
+        }
+        if let Some(m) = media {
+            let _ = self.media.set(m);
+        }
+        self.state.dynamic.send_modify(|d| d.media_ready = true);
+    }
+
+    /// Applies settings edited in the settings window: stores them, mirrors the fields the
+    /// headset sees, and wakes the connection manager when connection options changed.
+    ///
+    /// # Arguments
+    /// * `new` - the edited settings.
+    ///
+    /// # Returns
+    /// The previous settings.
+    pub fn update_settings(&self, new: StreamerSettings) -> StreamerSettings {
+        let old = std::mem::replace(&mut *self.settings.lock().expect("poisoned"), new.clone());
+        if old.auto_adjust_bitrate != new.auto_adjust_bitrate {
+            self.state.streamer.send_modify(|s| s.auto_adjust_bitrate = new.auto_adjust_bitrate);
+        }
+        // C#: AllowRemoteConnectionsChanged restarts the rendezvous with the new option.
+        if old.allow_remote_connections != new.allow_remote_connections && !self.state.dynamic.borrow().is_connected {
+            self.reconnect.notify_one();
+        }
+        old
+    }
+
+    /// Drops the current session (if any) and re-registers with the new accounts.
+    /// C#: `ConnectionManager` restart after `OnSaveClick`.
+    pub fn restart_connection(&self) {
+        self.reconnect.notify_one();
     }
 
     /// Latest headset frame index.

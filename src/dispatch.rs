@@ -114,6 +114,19 @@ pub async fn sync_streamer_settings(app: Arc<App>) {
     }
 }
 
+/// Streams the next monitor.  C#: `DynamicSettings.SwitchMonitor()` (headset request or hotkey).
+///
+/// # Arguments
+/// * `app` - application context.
+pub fn switch_monitor(app: &App) {
+    app.state.dynamic.send_modify(|d| {
+        if !d.monitors.is_empty() {
+            d.monitor_start_index = (d.monitor_start_index + 1) % d.monitors.len();
+        }
+    });
+    app.request_keyframe_all();
+}
+
 /// Saves a screenshot sent by the headset.  C#: `ConnectionManager` `ScreenshotToDesktop` handler.
 ///
 /// # Arguments
@@ -174,14 +187,7 @@ pub async fn run(app: Arc<App>, mut rx: mpsc::UnboundedReceiver<NetMessage>) {
             Request::CrashCallstack(m, stack) => error!(message = %m, %stack, "headset crash report"),
             Request::Simple(MessageType::UpdateRequired) => app.send(&NetMessage::new(MessageType::UpdateUnavailable)).await,
             Request::Simple(MessageType::RestartStreaming | MessageType::BeginStreaming) => app.request_keyframe_all(),
-            Request::Simple(MessageType::SwitchMonitor) => {
-                app.state.dynamic.send_modify(|d| {
-                    if !d.monitors.is_empty() {
-                        d.monitor_start_index = (d.monitor_start_index + 1) % d.monitors.len();
-                    }
-                });
-                app.request_keyframe_all();
-            }
+            Request::Simple(MessageType::SwitchMonitor) => switch_monitor(&app),
             Request::Simple(MessageType::Exit) => {
                 info!("headset requested exit");
                 app.request_shutdown();

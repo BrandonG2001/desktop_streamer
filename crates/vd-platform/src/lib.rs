@@ -17,6 +17,7 @@
 //! | `libVirtualDesktopNet.dll` | [`wlan`] | `iw` power-save off                         | `wlanapi` (exact port)        |
 //! | `IServiceManager.UseRealtimePriority` | [`process`] | `setpriority`                    | `SetPriorityClass`            |
 //! | named shared memory / events (VR drivers) | [`shm`] | POSIX `shm_open` + `sem_open`  | `CreateFileMapping` / events  |
+//! | autostart, `LockWorkStation`, Secure Boot | [`system`] | XDG autostart, `loginctl`, efivars | `Run` key, `LockWorkStation`, registry |
 
 #![warn(missing_docs)]
 
@@ -27,6 +28,7 @@ pub mod input;
 pub mod keymap;
 pub mod process;
 pub mod shm;
+pub mod system;
 pub mod wlan;
 
 pub use error::{PlatformError, Result};

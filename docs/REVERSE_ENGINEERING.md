@@ -105,7 +105,15 @@ Bitstreams are Annex-B. When `UseAnnexB == false`, start codes are rewritten as 
 
 ### Audio (observed)
 
-* **PC → headset:** WASAPI loopback of the default render endpoint, converted to 48 kHz stereo s16 with gain 0.9 and sent in 1152-byte packets. In headset-only mode without the virtual speaker the original mutes the endpoint; loopback still captures the mix.
+* **PC → headset:** WASAPI loopback, converted to 48 kHz stereo s16 with gain 0.9 and sent in 1152-byte packets. Which endpoint is recorded depends on the mode:
+  * **"VR headset only" with "Use virtual audio driver"** (the default): `IAudioService.SetVirtualAudioDeviceRender(pid, setAsDefault: !VoiceMeeterMode)`. The service makes **Speakers (Virtual Desktop Audio)** visible and the default device for every role, and the streamer records it. The PC therefore outputs nothing, even on Bluetooth devices. `RestoreDefaultAudioDeviceRender` restores the previous default when the session ends.
+    * While no session runs, the endpoint is hidden: its `DeviceState` carries the `0x10000000` flag set by `IPolicyConfig::SetEndpointVisibility(false)`. Hidden endpoints are not returned by `EnumAudioEndpoints`, so the port finds the endpoint under `HKLM\…\MMDevices\Audio\Render` by its interface name (`{b3f8fa53-0004-438e-9003-51a46e139bfc},6` = "Virtual Desktop Audio").
+    * The port switches the default with `IPolicyConfig` (`CLSID_PolicyConfigClient`, vtable slots 13–14).
+    * It records the previous defaults in a temp file so that a crash is undone at the next start. Verified on Windows: a played sound is captured from the virtual device, and the previous default comes back afterwards.
+  * **VoiceMeeter mode:** the virtual device is recorded but not made the default.
+  * **Headset only without the virtual driver:** the original mutes the default endpoint (`IsMuted = true`), and loopback still captures the mix.
+  * **"VR headset & computer":** the default endpoint is recorded unchanged.
+* **Auto-select microphone:** `SetVirtualAudioDeviceCapture` makes **Microphone (Virtual Desktop Audio)** the default recording device while microphone passthrough runs, and the port does the same.
 * **Headset → PC microphone:** the original binds the DirectShow `AM_KSCATEGORY_CAPTURE` filter named "VDVAD Wave" to `IKsControl` and calls `KsProperty` with Set `{15E0F7CE-5521-4214-A1D1-17DEDD428BE9}`, Id 0, Flags `KSPROPERTY_TYPE_SET`, data = 48 kHz mono s16 PCM (≤ 1920 bytes). The driver returns `ERROR_INVALID_FUNCTION` while nothing records from "Microphone (Virtual Desktop Audio)"; the original ignores the result. Verified on Windows by recording the endpoint while pushing a 440 Hz tone.
 
 ## 6. VR driver IPC (documented, not ported)
@@ -134,6 +142,33 @@ From `VirtualDesktop.Server.exe` `_0008._0002`. Its injection loop runs every 1 
   * `x`/`y` persist between packets and the server moves the cursor by `round(x), round(y)` every millisecond, which makes them a velocity in px/ms. When the trailing bool of the controller-button struct (`_0003_0002._0001`, offset 0x62 of `InputState`) is set, they are instead an absolute position, scaled by 65535 / primary-screen size.
   * `w1` is HWHEEL and `w2` is WHEEL, each value × 8, consumed once per packet. While a laser pointer is in range they become `InjectScrollInput` instead.
 * **Gamepad:** the `XINPUT_GAMEPAD`-shaped block goes straight to ViGEm. Outside desktop streaming the streamer copies only the gamepad and controller blocks.
+
+## 6b. Settings window (`MainWindow.xaml`)
+
+The WPF layout came from the compiled BAML resources (`mainwindow.baml`, `addaccountwindow.baml`,
+`themes/metrodark/*.baml`). They were decoded with a small BAML record reader, which resolves
+type, attribute and string tables and prints element trees with bindings. Behaviour came from
+the decompiled `MainWindow`, `BindingSettings`, `YouTubeHelper` and converter classes.
+
+* **Window:** borderless, 700×516 (also the minimum size). The header has the logo and
+  minimise/close buttons and doubles as the drag area. Tabs sit on the left, each 160×48 with
+  16 pt text. Colours are `#101010` background, `#151515` panels, `#F0F0F0` text, `#808080`
+  inactive tabs and `#00AADE` accent.
+* **Tabs and bindings:**
+  * **ACCOUNTS:** binds `StreamerSettings.Accounts`. Edit mode is `DynamicSettings.IsEditingAccounts`, which turns on automatically when no account is valid. "Add account ▾" lists Meta, Pico, Google, Play for Dream and Viveport (`PlatformProvider`). The limit is 5 accounts per platform, and duplicates are rejected. "Save" restarts the connection manager.
+  * **BINDINGS:** `BindingSettings.json` maps `BindingAction` to `{KeyCode, ModifierKeys}`. The defaults are Win+Shift+A/D/C/Z/X/H/K/O/G. Shortcuts are registered with `RegisterHotKey`, and every action except SwitchMonitor and ToggleVRMode sends a message of the same name.
+  * **OPTIONS** and **ADVANCED:** the fields, tooltips, slider ranges (`0.4–1.0`, `0.5–2.0`, `0.15–0.35`, `0.05–1.0`, shown as `0%`) and reset defaults are listed in `src/gui/tabs.rs`. The confirmation prompts guard turning off "Automatically adjust bitrate" and turning on "Boost game priority".
+  * **MEDIA:** shows the screenshot and video roots. Extra video folders are symbolic links inside the video root, which the original creates via `IServiceManager`. The port uses a directory junction on Windows and a symlink on Linux.
+  * **ABOUT:** shows labels formatted by `LatencyConverter`, `PCEthernetConverter`, `RoutingStatusConverter`, `BooleanToYesConverter` and `BooleanToEnabledConverter`.
+* **Tray:** the menu is "Settings...", "Launch Game...", "Disconnect" and "Exit". The icon and
+  tooltip follow the connection state. The close button hides the window to the tray, and the
+  minimise button minimises it. The port generates its own icons and omits "Launch Game...",
+  which needs the VR runtime.
+* **Paste URL:** runs `yt-dlp -f bestvideo+bestaudio[ext=m4a]/mp4 -o <videos>\%(title)s.%(ext)s
+  --compat-opt prefer-vp9-sort --restrict-filenames --no-check-certificate`. It parses
+  `[download] N% of` lines into `SharedStreamerSettings.DownloadState` and `DownloadProgress`.
+* **Not reproduced:** the update checker, "Check for interfering apps" (`AppsCheckerWindow`), the
+  hosts-file piracy warning, localisation (`CultureResources`) and new-headset pairing prompts.
 
 ## 7. Known uncertainties
 

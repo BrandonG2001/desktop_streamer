@@ -1,29 +1,32 @@
 //! `desktop_streamer` — a cross-platform Rust port of the Virtual Desktop Streamer.
 //!
-//! The original is a WPF application (`VirtualDesktop.Streamer.exe`); this port is a headless
-//! daemon with a small command-line interface.  See `docs/REVERSE_ENGINEERING.md` for how each
-//! module maps onto the original program and which parts are not ported yet (VR runtime
-//! drivers, Windows virtual devices).
+//! The original is a WPF application (`VirtualDesktop.Streamer.exe`).  Started without a
+//! sub-command this port opens the same settings window ([`gui`]) with a notification-area icon;
+//! `run` keeps the headless daemon for servers and scripts.  See `docs/REVERSE_ENGINEERING.md`
+//! for how each module maps onto the original program and which parts are not ported yet (VR
+//! runtime drivers, Windows virtual devices).
 
 mod app;
 mod audio_task;
+mod bindings;
 mod connection;
 mod desktop;
 mod dispatch;
 mod games;
+mod gui;
+mod hotkeys;
 mod input_task;
+mod service;
 mod settings;
 mod state;
 mod videos;
-
-use std::sync::Arc;
+mod youtube;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use tracing::{info, warn};
+use tracing::info;
 use vd_protocol::types::Platform;
 
-use crate::app::App;
 use crate::settings::StreamerSettings;
 
 /// Command-line interface.
@@ -33,7 +36,10 @@ struct Cli {
     /// Log filter (e.g. `info`, `debug`, `vd_net=trace`).
     #[arg(long, default_value = "info", global = true)]
     log: String,
-    /// Command (defaults to `run`).
+    /// Start hidden in the notification area (used by the log-in autostart entry).
+    #[arg(long)]
+    minimized: bool,
+    /// Command (defaults to the settings window).
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -41,7 +47,7 @@ struct Cli {
 /// Sub-commands.
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run the streamer.
+    /// Run the streamer without a window (headless).
     Run {
         /// Skip the vrdesktop.net rendezvous and listen on TCP 38810–38840 directly (development
         /// mode for headset emulators; no encryption).
@@ -81,13 +87,67 @@ enum AccountAction {
     List,
 }
 
-/// Initialises `tracing` with the given filter.
+/// Log file written next to the settings (C#: NLog `Logs\Streamer.log`, opened by "Show logs").
+///
+/// # Returns
+/// The path.
+pub fn log_path() -> std::path::PathBuf {
+    StreamerSettings::directory().join("Logs").join("Streamer.log")
+}
+
+/// Initialises `tracing` with the given filter, logging to the terminal and optionally to
+/// [`log_path`].
 ///
 /// # Arguments
 /// * `filter` - `EnvFilter` directive string.
-fn init_logging(filter: &str) {
+/// * `to_file` - also write the log file (truncated at start-up).
+fn init_logging(filter: &str, to_file: bool) {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     let env = tracing_subscriber::EnvFilter::try_new(filter).unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(env).with_target(false).init();
+    let file = to_file
+        .then(|| {
+            let path = log_path();
+            std::fs::create_dir_all(path.parent()?).ok()?;
+            std::fs::File::create(&path).ok()
+        })
+        .flatten()
+        .map(|f| tracing_subscriber::fmt::layer().with_ansi(false).with_target(false).with_writer(std::sync::Mutex::new(f)));
+    tracing_subscriber::registry().with(env).with(tracing_subscriber::fmt::layer().with_target(false)).with(file).init();
+}
+
+/// Creates a [`std::process::Command`] that never opens a console window on Windows (the
+/// settings window runs without a console).
+///
+/// # Arguments
+/// * `program` - executable to run.
+///
+/// # Returns
+/// The command builder.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut c = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(vd_platform::system::CREATE_NO_WINDOW);
+    }
+    c
+}
+
+/// Async variant of [`command`].
+///
+/// # Arguments
+/// * `program` - executable to run.
+///
+/// # Returns
+/// The command builder.
+pub fn async_command(program: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
+    #[allow(unused_mut)]
+    let mut c = tokio::process::Command::new(program);
+    #[cfg(windows)]
+    c.creation_flags(vd_platform::system::CREATE_NO_WINDOW);
+    c
 }
 
 /// Parses a platform name.
@@ -104,7 +164,7 @@ fn parse_platform(s: &str) -> Result<Platform> {
     Platform::parse(s).with_context(|| format!("unknown platform `{s}` (use meta, pico, viveport, google, apple, steam or pfd)"))
 }
 
-/// Runs the streamer until Ctrl+C or a headset `Exit` message.
+/// Runs the streamer without a window until Ctrl+C or a headset `Exit` message.
 ///
 /// # Arguments
 /// * `direct` - direct (relay-less) mode.
@@ -116,69 +176,14 @@ async fn run(direct: bool) -> Result<()> {
     if !direct && settings.access_tokens().is_empty() {
         bail!("no account configured: run `desktop_streamer account add meta <your Meta username>` first (or use `run --direct`)");
     }
-    let media = app::detect_media(&settings).await;
-    let (app, rx) = App::new(settings, media, direct);
-    {
-        let fb = (1920, 1080);
-        let monitors = desktop::list_monitors(fb);
-        info!(count = monitors.len(), "monitors detected");
-        app.state.dynamic.send_modify(|d| d.monitors = monitors);
-    }
-
-    tokio::spawn(dispatch::run(Arc::clone(&app), rx.inbound.messages));
-    tokio::spawn(dispatch::sync_streamer_settings(Arc::clone(&app)));
-    tokio::spawn(desktop::run(Arc::clone(&app)));
-    tokio::spawn(audio_task::run(Arc::clone(&app), rx.inbound.mic));
-    tokio::spawn(input_task::run(Arc::clone(&app), rx.inbound.states));
-    tokio::spawn(videos::run(Arc::clone(&app), rx.video));
-    tokio::spawn(session_side_effects(Arc::clone(&app)));
-    // Gaze samples drive the dynamic foveation map of the VR encoder, which is not ported; drain them.
-    tokio::spawn(async move {
-        let mut gaze = rx.inbound.gaze;
-        while gaze.recv().await.is_some() {}
-    });
-    let conn = tokio::spawn(connection::run(Arc::clone(&app), rx.peers));
-
+    let app = service::start(settings, direct);
     let mut shutdown = app.shutdown.subscribe();
     tokio::select! {
         _ = tokio::signal::ctrl_c() => info!("Ctrl+C received"),
         _ = shutdown.changed() => {}
     }
-    app.request_shutdown();
-    app.channels.messaging.reset().await;
-    conn.abort();
-    app.save_settings();
-    info!("streamer stopped");
+    service::stop(&app).await;
     Ok(())
-}
-
-/// Starts/stops session-scoped helpers: Wi-Fi optimisation (`StartWLANOptimizerThread`) and
-/// priority boost (`IServiceManager.UseRealtimePriority`).
-///
-/// # Arguments
-/// * `app` - application context.
-async fn session_side_effects(app: Arc<App>) {
-    let mut rx = app.state.dynamic.subscribe();
-    let mut optimizer: Option<vd_platform::wlan::WlanOptimizer> = None;
-    loop {
-        let connected = rx.borrow().is_connected;
-        if connected && optimizer.is_none() {
-            optimizer = Some(vd_platform::wlan::WlanOptimizer::start());
-            if app.settings.lock().expect("poisoned").boost_priority {
-                if let Err(e) = vd_platform::process::set_high_priority(true) {
-                    warn!(error = %e, "cannot raise process priority");
-                }
-            }
-        } else if !connected {
-            if let Some(o) = optimizer.take() {
-                tokio::task::spawn_blocking(move || o.stop());
-                let _ = vd_platform::process::set_high_priority(false);
-            }
-        }
-        if rx.changed().await.is_err() {
-            return;
-        }
-    }
 }
 
 /// Prints diagnostics.
@@ -214,46 +219,71 @@ async fn probe() -> Result<()> {
     Ok(())
 }
 
+/// Handles the `account` sub-command.
+///
+/// # Arguments
+/// * `action` - what to do.
+///
+/// # Errors
+/// Unknown platform names or settings that cannot be saved.
+fn account(action: AccountAction) -> Result<()> {
+    let mut s = StreamerSettings::load();
+    match action {
+        AccountAction::Add { platform, user } => {
+            s.add_account(parse_platform(&platform)?, &user);
+            s.save()?;
+            println!("added {platform} account {user}");
+        }
+        AccountAction::Remove { platform, user } => {
+            let removed = s.remove_account(parse_platform(&platform)?, &user);
+            s.save()?;
+            println!("{}", if removed { "removed" } else { "not found" });
+        }
+        AccountAction::List => {
+            for (p, users) in &s.accounts {
+                for u in users {
+                    println!("{p}: {u}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Program entry point.
 ///
 /// # Errors
 /// Start-up failures are printed by `anyhow`.
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
-    init_logging(&cli.log);
+    let gui = cli.command.is_none();
+    // A second launch only asks the running window to show itself (and must not truncate its log).
+    let instance = if gui {
+        match gui::claim_instance() {
+            Some(l) => Some(l),
+            None => return Ok(()),
+        }
+    } else {
+        None
+    };
+    init_logging(&cli.log, gui || matches!(cli.command, Some(Command::Run { .. })));
     // Physical-pixel monitor rectangles, matching the headset's pointer coordinates.
     vd_platform::display::enable_dpi_awareness();
-    match cli.command.unwrap_or(Command::Run { direct: false }) {
-        Command::Run { direct } => run(direct).await,
-        Command::Probe => probe().await,
-        Command::Account { action } => {
-            let mut s = StreamerSettings::load();
-            match action {
-                AccountAction::Add { platform, user } => {
-                    s.add_account(parse_platform(&platform)?, &user);
-                    s.save()?;
-                    println!("added {platform} account {user}");
-                }
-                AccountAction::Remove { platform, user } => {
-                    let removed = s.remove_account(parse_platform(&platform)?, &user);
-                    s.save()?;
-                    println!("{}", if removed { "removed" } else { "not found" });
-                }
-                AccountAction::List => {
-                    for (p, users) in &s.accounts {
-                        for u in users {
-                            println!("{p}: {u}");
-                        }
-                    }
-                }
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let Some(command) = cli.command else {
+        // The window runs on the main thread (required by winit); the streamer on the runtime.
+        return gui::run(&rt, cli.minimized, instance.expect("claimed above"));
+    };
+    rt.block_on(async move {
+        match command {
+            Command::Run { direct } => run(direct).await,
+            Command::Probe => probe().await,
+            Command::Account { action } => account(action),
+            Command::Config => {
+                println!("{}", StreamerSettings::path().display());
+                println!("{}", serde_json::to_string_pretty(&StreamerSettings::load())?);
+                Ok(())
             }
-            Ok(())
         }
-        Command::Config => {
-            println!("{}", StreamerSettings::path().display());
-            println!("{}", serde_json::to_string_pretty(&StreamerSettings::load())?);
-            Ok(())
-        }
-    }
+    })
 }

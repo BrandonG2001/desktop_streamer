@@ -5,7 +5,6 @@
 use std::path::Path;
 use std::process::Stdio;
 
-use tokio::process::Command;
 
 use crate::error::{MediaError, Result};
 use crate::probe::MediaInfo;
@@ -33,7 +32,7 @@ pub async fn render_jpeg(ff: &Ffmpeg, info: &MediaInfo, path: &Path, width: u32)
     let at = if dur > 0.0 { (dur * 0.1).min(10.0) } else { 0.0 };
     let hdr = info.video().is_some_and(|v| v.is_hdr()) && ff.has_input("zscale") && ff.has_input("tonemap");
     let vf = format!("{}scale={width}:-2", if hdr { HDR_TONEMAP } else { "" });
-    let out = Command::new(&ff.ffmpeg)
+    let out = crate::command(&ff.ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-ss", &format!("{at:.3}"), "-i"])
         .arg(path)
         .args(["-frames:v", "1", "-vf", &vf, "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "4", "pipe:1"])

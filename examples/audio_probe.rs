@@ -5,15 +5,19 @@
 //! 440 Hz tone into the virtual microphone (record "Microphone (Virtual Desktop Audio)" on
 //! Windows, or "Virtual Desktop Microphone" on Linux, to hear it).
 //!
+//! With `headset-only` the PC speakers are silenced the way "VR headset only" does it (on
+//! Windows the Virtual Desktop speakers become the default device until the probe ends).
+//!
 //! ```text
 //! cargo run --example audio_probe -- 5
+//! cargo run --example audio_probe -- 10 headset-only
 //! ```
 
 use std::time::{Duration, Instant};
 
 use vd_platform::audio::{AudioOptions, AudioSession};
 
-/// Entry point: `audio_probe [seconds]`.
+/// Entry point: `audio_probe [seconds] [headset-only]`.
 ///
 /// # Errors
 /// Never; failures are printed.
@@ -21,7 +25,16 @@ use vd_platform::audio::{AudioOptions, AudioSession};
 async fn main() {
     tracing_subscriber::fmt().with_env_filter("debug").with_target(false).init();
     let seconds: u64 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(5);
-    let opts = AudioOptions { capture: true, headset_only: false, microphone: true, manage_devices: true };
+    let headset_only = std::env::args().any(|a| a == "headset-only");
+    let opts = AudioOptions {
+        capture: true,
+        headset_only,
+        virtual_speaker: true,
+        voicemeeter: false,
+        microphone: true,
+        select_microphone: false,
+        manage_devices: true,
+    };
     let mut session = match AudioSession::start(opts).await {
         Ok(s) => s,
         Err(e) => {

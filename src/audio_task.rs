@@ -29,16 +29,24 @@ fn wanted(app: &App) -> Option<AudioOptions> {
     if !app.state.dynamic.borrow().is_connected {
         return None;
     }
-    let (mode, virtual_driver, manage) = {
+    let (mode, virtual_speaker, voicemeeter, select_microphone, manage) = {
         let s = app.settings.lock().expect("poisoned");
-        (s.audio_streaming, s.use_virtual_audio_driver, s.port.manage_audio_devices)
+        (s.audio_streaming, s.use_virtual_audio_driver, s.voicemeeter_mode, s.auto_select_microphone, s.port.manage_audio_devices)
     };
     let capture = mode != AudioStreaming::Disabled && matches!(app.state.streaming_source(), StreamingSource::Desktop | StreamingSource::VR);
     let microphone = app.state.user.borrow().mic_passthrough;
     if !capture && !microphone {
         return None;
     }
-    Some(AudioOptions { capture, headset_only: mode == AudioStreaming::HeadsetOnly && virtual_driver, microphone, manage_devices: manage })
+    Some(AudioOptions {
+        capture,
+        headset_only: mode == AudioStreaming::HeadsetOnly,
+        virtual_speaker,
+        voicemeeter: virtual_speaker && voicemeeter,
+        microphone,
+        select_microphone,
+        manage_devices: manage,
+    })
 }
 
 /// Audio task.

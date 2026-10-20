@@ -16,9 +16,10 @@ evdev = "0.12.2"
 libc = "0.2.155"
 
 [target.'cfg(windows)'.dependencies]
-# COM-based audio APIs (WASAPI loopback, endpoint volume, DirectShow device enumeration, IKsControl).
+# COM-based APIs: audio (WASAPI loopback, endpoint volume, DirectShow, IKsControl) and DXGI adapter names.
 windows = { version = "0.58.0", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
     "Win32_Media_Audio",
     "Win32_Media_Audio_Endpoints",
     "Win32_Media_DirectShow",
@@ -27,12 +28,15 @@ windows = { version = "0.58.0", features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Variant",
     "Win32_System_Ole",
+    "Win32_System_Registry",
 ] }
 windows-sys = { version = "0.59.0", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_NetworkManagement_WiFi",
+    "Win32_System_Console",
     "Win32_System_Memory",
+    "Win32_System_Shutdown",
     "Win32_System_Threading",
     "Win32_Security",
     "Win32_UI_HiDpi",

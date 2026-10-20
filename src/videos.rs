@@ -85,7 +85,7 @@ struct Playing {
 }
 
 async fn start(app: &App, path: &str, position: i64, audio_stream: i8) -> Option<Playing> {
-    let media = app.media.as_ref()?;
+    let media = app.media.get()?;
     let file = resolve(&videos_root(app), path)?;
     let info = match probe(&media.ffmpeg, &file).await {
         Ok(i) => i,

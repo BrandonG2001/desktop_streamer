@@ -5,7 +5,6 @@ use std::path::Path;
 use std::process::Stdio;
 
 use serde::Deserialize;
-use tokio::process::Command;
 
 use crate::error::{MediaError, Result};
 use crate::version::Ffmpeg;
@@ -134,7 +133,7 @@ impl MediaInfo {
 /// # Errors
 /// [`MediaError::Probe`] if ffprobe fails, [`MediaError::Json`] if its output is malformed.
 pub async fn probe(ff: &Ffmpeg, path: &Path) -> Result<MediaInfo> {
-    let out = Command::new(&ff.ffprobe)
+    let out = crate::command(&ff.ffprobe)
         .args(["-v", "error", "-show_streams", "-show_format", "-of", "json"])
         .arg(path)
         .stdin(Stdio::null())

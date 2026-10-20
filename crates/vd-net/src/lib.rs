@@ -31,3 +31,19 @@ pub mod stream;
 pub mod upnp;
 
 pub use error::{NetError, Result};
+
+/// Creates a [`tokio::process::Command`] that never opens a console window on Windows (the
+/// streamer may run without a console, e.g. when started from the settings window).
+///
+/// # Arguments
+/// * `program` - executable to run.
+///
+/// # Returns
+/// The command builder.
+pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
+    #[allow(unused_mut)]
+    let mut c = tokio::process::Command::new(program);
+    #[cfg(windows)]
+    c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    c
+}

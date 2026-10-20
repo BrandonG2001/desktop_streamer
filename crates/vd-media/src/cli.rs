@@ -13,7 +13,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use vd_protocol::nal::{self, AccessUnitSplitter, Bitstream};
@@ -79,7 +79,7 @@ impl CliVideoPipeline {
     pub fn start(ff: &Ffmpeg, capture: &CaptureSpec, enc: &EncoderConfig) -> Result<Self> {
         let args = build_args(ff, capture, enc);
         info!(cmd = %format!("{} {}", ff.ffmpeg.display(), args.join(" ")), "starting encoder pipeline");
-        let mut child = Command::new(&ff.ffmpeg)
+        let mut child = crate::command(&ff.ffmpeg)
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

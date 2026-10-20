@@ -10,7 +10,6 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Stdio;
 
-use tokio::process::Command;
 use tracing::debug;
 
 use crate::error::{MediaError, Result};
@@ -118,7 +117,7 @@ pub fn tool_path(tool: &str) -> PathBuf {
 }
 
 async fn run_capture(path: &PathBuf, args: &[&str]) -> Result<String> {
-    let out = Command::new(path)
+    let out = crate::command(path)
         .args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::piped())
@@ -207,7 +206,7 @@ impl Ffmpeg {
         if !self.has_encoder(encoder) {
             return false;
         }
-        let mut cmd = Command::new(&self.ffmpeg);
+        let mut cmd = crate::command(&self.ffmpeg);
         cmd.args(["-hide_banner", "-loglevel", "error"]).args(pre_input);
         cmd.args(["-f", "lavfi", "-i", "color=black:s=256x256", "-vframes", "1", "-an"]);
         if let Some(f) = filter {

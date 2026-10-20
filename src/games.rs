@@ -123,7 +123,7 @@ pub async fn launch(_app: &App, id: GameId) {
     }
     let url = format!("steam://rungameid/{}", id.id);
     let res = if cfg!(windows) {
-        tokio::process::Command::new("cmd").args(["/C", "start", "", &url]).spawn()
+        crate::async_command("cmd").args(["/C", "start", "", &url]).spawn()
     } else {
         tokio::process::Command::new("xdg-open").arg(&url).spawn()
     };

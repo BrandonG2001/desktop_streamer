@@ -321,7 +321,12 @@ fn plan_matches(app: &App, media: &MediaEnv, plan: &StreamPlan) -> bool {
 /// # Arguments
 /// * `app` - application context.
 pub async fn run(app: Arc<App>) {
-    let Some(media) = app.media.clone() else {
+    // Encoder detection runs in the background at start-up.
+    let mut ready_rx = app.state.dynamic.subscribe();
+    if ready_rx.wait_for(|d| d.media_ready).await.is_err() {
+        return;
+    }
+    let Some(media) = app.media.get().cloned() else {
         warn!("desktop streaming disabled (no encoder)");
         return;
     };

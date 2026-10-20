@@ -11,7 +11,6 @@
 use std::net::IpAddr;
 use std::time::Duration;
 
-use tokio::process::Command;
 use vd_protocol::types::RoutingStatus;
 
 /// Probe target (`TraceRoute.m__0001`).
@@ -105,15 +104,15 @@ pub async fn probe_hop(ttl: u8, timeout: Duration) -> Option<IpAddr> {
     let millis = timeout.as_millis().max(1).to_string();
     let ttl = ttl.to_string();
     let mut cmd = if cfg!(windows) {
-        let mut c = Command::new("ping");
+        let mut c = crate::command("ping");
         c.args(["-n", "1", "-w", &millis, "-i", &ttl, TARGET]);
         c
     } else if cfg!(target_os = "macos") {
-        let mut c = Command::new("/sbin/ping");
+        let mut c = crate::command("/sbin/ping");
         c.args(["-c", "1", "-t", &secs, "-m", &ttl, TARGET]);
         c
     } else {
-        let mut c = Command::new("ping");
+        let mut c = crate::command("ping");
         c.args(["-c", "1", "-W", &secs, "-t", &ttl, TARGET]);
         c
     };

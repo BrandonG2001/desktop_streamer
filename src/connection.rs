@@ -35,6 +35,7 @@ use vd_protocol::messages::PeerInfo;
 use vd_protocol::settings::reload_message;
 
 use crate::app::App;
+use crate::state::ConnectionStatus;
 
 /// Delay before retrying after a failure.
 const RETRY: Duration = Duration::from_secs(5);
@@ -50,7 +51,7 @@ fn lan_bind(ch: Channel) -> SocketAddr {
 /// The offset, or 0 if unknown.
 fn utc_offset_hours() -> f64 {
     let out = if cfg!(windows) {
-        std::process::Command::new("powershell").args(["-NoProfile", "-Command", "[TimeZoneInfo]::Local.BaseUtcOffset.TotalHours"]).output()
+        crate::command("powershell").args(["-NoProfile", "-Command", "[TimeZoneInfo]::Local.BaseUtcOffset.TotalHours"]).output()
     } else {
         std::process::Command::new("date").arg("+%z").output()
     };
@@ -171,6 +172,7 @@ async fn teardown(app: &App) {
     c.video.reset().await;
     c.audio.reset().await;
     app.state.reset_headset_state();
+    app.state.dynamic.send_modify(|d| d.status = ConnectionStatus::Disconnected);
     info!("session ended");
 }
 
@@ -207,6 +209,7 @@ async fn on_connected(app: &App, encrypted: bool) {
     app.state.dynamic.send_modify(|d| {
         d.is_connected = true;
         d.encrypted = encrypted;
+        d.status = ConnectionStatus::Connected;
     });
     let reload = reload_message(&*app.state.streamer.borrow());
     match reload {
@@ -235,6 +238,7 @@ impl App {
 async fn rendezvous_session(app: &Arc<App>, peers: &mut mpsc::UnboundedReceiver<PeerInfo>) -> Result<(), NetError> {
     // A PeerInfo left over from a previous relay leg refers to a port we no longer use.
     while peers.try_recv().is_ok() {}
+    app.state.dynamic.send_modify(|d| d.status = ConnectionStatus::Connecting);
     let params = register(app).await?;
     let relay_ep = relay::relay_endpoint(params.region, Channel::Messaging, params.rotation);
     info!(%relay_ep, region = ?params.region, "connecting to relay");
@@ -247,6 +251,7 @@ async fn rendezvous_session(app: &Arc<App>, peers: &mut mpsc::UnboundedReceiver<
         }
         Err(e) => return Err(e),
     }
+    app.state.dynamic.send_modify(|d| d.status = ConnectionStatus::Waiting);
     let mut state = app.channels.messaging.subscribe();
     let peer = loop {
         tokio::select! {
@@ -296,6 +301,7 @@ async fn rendezvous_session(app: &Arc<App>, peers: &mut mpsc::UnboundedReceiver<
 /// Connection errors.
 async fn direct_session(app: &Arc<App>) -> Result<(), NetError> {
     info!("direct mode: waiting for a headset on TCP 38810–38840");
+    app.state.dynamic.send_modify(|d| d.status = ConnectionStatus::Waiting);
     app.channels.messaging.listen_direct(lan_bind(Channel::Messaging), Duration::from_secs(3600)).await?;
     let modes = [Channel::Video, Channel::Audio, Channel::Data].map(|ch| ChannelMode::Lan { bind: lan_bind(ch) });
     establish_media(app, modes, None, false).await?;
@@ -317,18 +323,42 @@ pub async fn run(app: Arc<App>, mut peers: mpsc::UnboundedReceiver<PeerInfo>) {
     let status = vd_net::routing::detect_routing_status().await;
     app.state.dynamic.send_modify(|d| d.routing_status = status);
     info!(?status, "routing status");
+    let mut shutdown = app.shutdown.subscribe();
     while !app.is_shutting_down() {
-        let res = if app.direct_mode { direct_session(&app).await } else { rendezvous_session(&app, &mut peers).await };
+        if !app.direct_mode && app.settings.lock().expect("poisoned").access_tokens().is_empty() {
+            // C#: IsEditingAccounts — nothing to register until an account is added.
+            info!("no account configured; add one in the settings window");
+            tokio::select! {
+                _ = app.reconnect.notified() => {}
+                _ = shutdown.changed() => {}
+            }
+            continue;
+        }
+        let session = async {
+            if app.direct_mode { direct_session(&app).await } else { rendezvous_session(&app, &mut peers).await }
+        };
+        // The settings window asks for a fresh registration when accounts or options change.
+        let res = tokio::select! {
+            r = session => Some(r),
+            _ = app.reconnect.notified() => None,
+        };
         teardown(&app).await;
         if app.is_shutting_down() {
             break;
         }
         match res {
-            Ok(()) => {}
-            Err(NetError::AccessDenied(e)) => error!(error = %e, "Anti-virus or VPN software is preventing connections to your PC"),
-            Err(NetError::Timeout(what)) => warn!(what, "timed out"),
-            Err(e) => warn!(error = %e, "session failed"),
+            None => {
+                info!("connection settings changed; registering again");
+                continue;
+            }
+            Some(Ok(())) => {}
+            Some(Err(NetError::AccessDenied(e))) => error!(error = %e, "Anti-virus or VPN software is preventing connections to your PC"),
+            Some(Err(NetError::Timeout(what))) => warn!(what, "timed out"),
+            Some(Err(e)) => warn!(error = %e, "session failed"),
         }
-        tokio::time::sleep(RETRY).await;
+        tokio::select! {
+            _ = tokio::time::sleep(RETRY) => {}
+            _ = app.reconnect.notified() => {}
+        }
     }
 }

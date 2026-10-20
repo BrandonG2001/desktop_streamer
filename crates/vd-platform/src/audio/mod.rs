@@ -6,10 +6,12 @@
 //!
 //! | platform | PC → headset                              | headset → PC microphone                         |
 //! |----------|-------------------------------------------|-------------------------------------------------|
-//! | Windows  | [`wasapi`]: WASAPI loopback (+ endpoint mute for headset-only) | [`wasapi`]: `IKsControl` on the installed `vdvad.sys` driver |
+//! | Windows  | [`wasapi`]: WASAPI loopback; for headset-only the virtual speakers become the default device ([`endpoint`]) | [`wasapi`]: `IKsControl` on the installed `vdvad.sys` driver |
 //! | Linux    | [`pulse`]: `parec` on a null sink monitor | [`pulse`]: `pacat` into a null sink + remap source |
 
 pub mod convert;
+#[cfg(windows)]
+pub mod endpoint;
 #[cfg(target_os = "linux")]
 pub mod pulse;
 #[cfg(windows)]
@@ -28,8 +30,17 @@ pub struct AudioOptions {
     pub capture: bool,
     /// `AudioStreaming::HeadsetOnly` — silence the PC speakers while streaming.
     pub headset_only: bool,
+    /// `StreamerSettings.UseVirtualAudioDriver` — route headset-only audio through the
+    /// Virtual Desktop speaker device (Windows) instead of muting the speakers.
+    pub virtual_speaker: bool,
+    /// `StreamerSettings.VoiceMeeterMode` — record the virtual speaker device without making it
+    /// the default (Windows).
+    pub voicemeeter: bool,
     /// Forward the headset microphone (`SharedUserSettings.MicPassthrough`).
     pub microphone: bool,
+    /// `StreamerSettings.AutoSelectMicrophone` — make the virtual microphone the default
+    /// recording device while forwarding (Windows).
+    pub select_microphone: bool,
     /// Allowed to create/switch audio devices (Linux virtual sinks).
     pub manage_devices: bool,
 }
@@ -96,14 +107,22 @@ impl AudioSession {
         }
         #[cfg(windows)]
         {
+            wasapi::recover_defaults();
             if opts.capture {
-                match wasapi::WasapiCapture::start(opts.headset_only) {
+                // C#: LoopbackCapture._0003() and IAudioService.SetVirtualAudioDeviceRender.
+                let route = match (opts.virtual_speaker, opts.voicemeeter, opts.headset_only) {
+                    (true, true, _) => wasapi::RenderRoute::VirtualOnly,
+                    (true, false, true) => wasapi::RenderRoute::VirtualDefault,
+                    (false, _, true) => wasapi::RenderRoute::MuteDefault,
+                    (_, _, false) => wasapi::RenderRoute::Shared,
+                };
+                match wasapi::WasapiCapture::start(route) {
                     Ok(c) => inner.capture = Some(c),
                     Err(e) => warn!(error = %e, "PC audio capture unavailable"),
                 }
             }
             if opts.microphone {
-                match wasapi::KsMicrophone::start() {
+                match wasapi::KsMicrophone::start(opts.select_microphone) {
                     Ok(m) => inner.mic = Some(m),
                     Err(e) => warn!(error = %e, "virtual microphone unavailable"),
                 }

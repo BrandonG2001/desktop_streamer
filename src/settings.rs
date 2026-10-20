@@ -20,6 +20,21 @@ fn t() -> bool {
     true
 }
 
+/// Serde default `1.0`.
+fn one() -> f32 {
+    1.0
+}
+
+/// Serde default for `FoveaSize`.
+fn fovea() -> f32 {
+    0.25
+}
+
+/// Serde default for `Sharpening` (C#: `StreamerSettings.DefaultSharpening`).
+fn sharpening() -> f32 {
+    0.7
+}
+
 /// Port-specific options (not present in the original).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -148,6 +163,48 @@ pub struct StreamerSettings {
     /// Raise process priority while streaming (`BoostGamePriority`).
     #[serde(rename = "BoostGamePriority")]
     pub boost_priority: bool,
+    /// Tab shown when the settings window opens.
+    #[serde(rename = "SelectedTab")]
+    pub selected_tab: i32,
+    /// Launch the streamer when the user logs in.
+    #[serde(rename = "StartWithWindows", default = "t")]
+    pub start_with_windows: bool,
+    /// Start hidden in the notification area.
+    #[serde(rename = "StartMinimizedInTray")]
+    pub start_minimized_in_tray: bool,
+    /// Make the virtual microphone the default recording device when passthrough is on.
+    #[serde(rename = "AutoSelectMicrophone", default = "t")]
+    pub auto_select_microphone: bool,
+    /// Leave the default playback device alone so VoiceMeeter can route audio.
+    #[serde(rename = "VoiceMeeterMode")]
+    pub voicemeeter_mode: bool,
+    /// Lock the computer when the headset disconnects.
+    #[serde(rename = "LockComputer")]
+    pub lock_computer: bool,
+    /// Ask before a new headset on the LAN may pair with this computer.
+    #[serde(rename = "ShowPairingRequests", default = "t")]
+    pub show_pairing_requests: bool,
+    /// Skip rendering the invisible corners of VR frames.
+    #[serde(rename = "UseFovStencil", default = "t")]
+    pub use_fov_stencil: bool,
+    /// Horizontal field-of-view scale reported to VR games (0.4–1.0).
+    #[serde(rename = "HorizontalFovTangent", default = "one")]
+    pub horizontal_fov_tangent: f32,
+    /// Vertical field-of-view scale reported to VR games (0.4–1.0).
+    #[serde(rename = "VerticalFovTangent", default = "one")]
+    pub vertical_fov_tangent: f32,
+    /// VDXR render resolution multiplier (0.5–2.0).
+    #[serde(rename = "RenderResolutionOverride", default = "one")]
+    pub render_resolution_override: f32,
+    /// Foveated-streaming inner region size (0.15–0.35).
+    #[serde(rename = "FoveaSize", default = "fovea")]
+    pub fovea_size: f32,
+    /// Apply contrast-adaptive sharpening before encoding.
+    #[serde(rename = "UseSharpening")]
+    pub use_sharpening: bool,
+    /// Sharpening strength (0.05–1.0).
+    #[serde(rename = "Sharpening", default = "sharpening")]
+    pub sharpening: f32,
     /// Port-specific options.
     #[serde(rename = "Port")]
     pub port: PortOptions,
@@ -181,6 +238,20 @@ impl Default for StreamerSettings {
             screenshots_root_path: None,
             monitor_count: 1,
             boost_priority: false,
+            selected_tab: 0,
+            start_with_windows: true,
+            start_minimized_in_tray: false,
+            auto_select_microphone: true,
+            voicemeeter_mode: false,
+            lock_computer: false,
+            show_pairing_requests: true,
+            use_fov_stencil: true,
+            horizontal_fov_tangent: 1.0,
+            vertical_fov_tangent: 1.0,
+            render_resolution_override: 1.0,
+            fovea_size: 0.25,
+            use_sharpening: false,
+            sharpening: 0.7,
             port: PortOptions::default(),
         }
     }
@@ -252,6 +323,41 @@ impl StreamerSettings {
             .filter_map(|(p, names)| Platform::parse(p).map(|pl| (pl, names)))
             .flat_map(|(pl, names)| names.iter().map(move |n| vd_net::registry::PlatformAccessToken::new(pl, n.clone())))
             .collect()
+    }
+
+    /// Restores the OPTIONS tab defaults.  C#: `MainWindow.OnOptionsResetDefaultsClick`.
+    pub fn reset_options(&mut self) {
+        let d = Self::default();
+        self.preferred_codec = d.preferred_codec;
+        self.enable_aq = d.enable_aq;
+        self.enable_2pass = d.enable_2pass;
+        self.gamepad_emulation = d.gamepad_emulation;
+        self.audio_streaming = d.audio_streaming;
+        self.use_virtual_audio_driver = d.use_virtual_audio_driver;
+        self.voicemeeter_mode = d.voicemeeter_mode;
+        self.allow_remote_connections = d.allow_remote_connections;
+        self.encrypt_local_traffic = d.encrypt_local_traffic;
+        self.auto_adjust_bitrate = d.auto_adjust_bitrate;
+        self.start_with_windows = d.start_with_windows;
+        self.start_minimized_in_tray = d.start_minimized_in_tray;
+        self.use_touch_input = d.use_touch_input;
+        self.lock_computer = d.lock_computer;
+        self.auto_select_microphone = d.auto_select_microphone;
+        self.show_pairing_requests = d.show_pairing_requests;
+        self.openxr_runtime = d.openxr_runtime;
+    }
+
+    /// Restores the ADVANCED tab defaults.  C#: `MainWindow.OnAdvancedOptionsResetDefaultsClick`.
+    pub fn reset_advanced(&mut self) {
+        let d = Self::default();
+        self.horizontal_fov_tangent = d.horizontal_fov_tangent;
+        self.vertical_fov_tangent = d.vertical_fov_tangent;
+        self.render_resolution_override = d.render_resolution_override;
+        self.fovea_size = d.fovea_size;
+        self.use_fov_stencil = d.use_fov_stencil;
+        self.boost_priority = d.boost_priority;
+        self.use_sharpening = d.use_sharpening;
+        self.sharpening = d.sharpening;
     }
 
     /// Adds an account.  C#: `AddAccountWindow` → `StreamerSettings.Accounts`.

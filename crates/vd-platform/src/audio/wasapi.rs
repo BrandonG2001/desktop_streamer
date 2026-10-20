@@ -2,11 +2,12 @@
 //!
 //! * **PC → headset** — C#: `LoopbackCapture` (CSCore `WasapiLoopbackCapture`).  WASAPI loopback
 //!   of the default render endpoint (`eRender`/`eConsole`) in the endpoint's mix format, converted
-//!   to 48 kHz stereo `s16le` with gain 0.9 and cut into 1152-byte packets.  In
-//!   `AudioStreaming.HeadsetOnly` mode without the virtual speaker device the original mutes the
-//!   endpoint (`AudioEndpointVolume.IsMuted = true`) — loopback capture still receives the
-//!   mix — and restores the mute state afterwards; this port does the same.  The stream is
-//!   re-opened when the default device changes (`MMDeviceEnumerator.DefaultDeviceChanged`).
+//!   to 48 kHz stereo `s16le` with gain 0.9 and cut into 1152-byte packets.  See
+//!   [`RenderRoute`] for how "VR headset only" keeps the PC silent: normally the hidden
+//!   **Speakers (Virtual Desktop Audio)** endpoint becomes the default device and is recorded
+//!   ([`super::endpoint`]); without the driver the default endpoint is muted
+//!   (`AudioEndpointVolume.IsMuted = true`) while it is recorded.  When recording the default
+//!   device the stream is re-opened when it changes (`MMDeviceEnumerator.DefaultDeviceChanged`).
 //! * **headset → PC microphone** — C#: `Microphone._0002()`.  The original enumerates
 //!   `AM_KSCATEGORY_CAPTURE` DirectShow filters, binds the one named **"VDVAD Wave"** (the
 //!   `vdvad.sys` virtual audio driver installed with Virtual Desktop) to `IKsControl`, and pushes
@@ -35,15 +36,16 @@ use windows::Win32::Foundation::BOOL;
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
     AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
-    WAVEFORMATEX, WAVEFORMATEXTENSIBLE, eConsole, eRender,
+    WAVEFORMATEX, WAVEFORMATEXTENSIBLE, eCapture, eConsole, eRender,
 };
 use windows::Win32::Media::DirectShow::ICreateDevEnum;
 use windows::Win32::Media::KernelStreaming::{IKsControl, KSIDENTIFIER};
 use windows::Win32::System::Com::StructuredStorage::IPropertyBag;
 use windows::Win32::System::Com::{CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IBindCtx, IEnumMoniker, IMoniker};
-use windows::core::{BSTR, GUID, VARIANT, w};
+use windows::core::{BSTR, GUID, HSTRING, VARIANT, w};
 
 use super::convert::{Packetizer, SampleFormat, StereoResampler, decode_to_f32};
+use super::endpoint::{DefaultSwitch, find_virtual_endpoint};
 use crate::error::{PlatformError, Result};
 
 /// `CLSID_SystemDeviceEnum`.
@@ -97,7 +99,7 @@ impl Drop for ComGuard {
 ///
 /// # Returns
 /// The id (empty on failure).
-fn device_id(device: &IMMDevice) -> String {
+pub(crate) fn device_id(device: &IMMDevice) -> String {
     // SAFETY: GetId returns a CoTaskMem string that we free after copying.
     unsafe {
         match device.GetId() {
@@ -174,21 +176,25 @@ struct Loopback {
 }
 
 impl Loopback {
-    /// Opens loopback capture on the default render endpoint.
+    /// Opens loopback capture on a render endpoint.
     ///
     /// # Arguments
     /// * `enumerator` - device enumerator.
-    /// * `mute` - mute the endpoint while capturing (headset-only mode).
+    /// * `wanted` - endpoint id to record, or `None` for the default device.
+    /// * `mute` - mute the endpoint while capturing (headset-only mode without the driver).
     ///
     /// # Returns
     /// The started stream.
     ///
     /// # Errors
     /// Win32 errors from WASAPI.
-    fn open(enumerator: &IMMDeviceEnumerator, mute: bool) -> Result<Self> {
+    fn open(enumerator: &IMMDeviceEnumerator, wanted: Option<&str>, mute: bool) -> Result<Self> {
         // SAFETY: standard WASAPI call sequence on an MTA thread; pointers come from the API.
         unsafe {
-            let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole).map_err(|e| win(e, "GetDefaultAudioEndpoint"))?;
+            let device = match wanted {
+                Some(id) => enumerator.GetDevice(&HSTRING::from(id)).map_err(|e| win(e, "IMMDeviceEnumerator::GetDevice"))?,
+                None => enumerator.GetDefaultAudioEndpoint(eRender, eConsole).map_err(|e| win(e, "GetDefaultAudioEndpoint"))?,
+            };
             let id = device_id(&device);
             let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(|e| win(e, "IMMDevice::Activate(IAudioClient)"))?;
             let pfmt = client.GetMixFormat().map_err(|e| win(e, "GetMixFormat"))?;
@@ -203,8 +209,9 @@ impl Loopback {
                 match device.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) {
                     Ok(vol) => {
                         let was = vol.GetMute().map(|b| b.as_bool()).unwrap_or(false);
-                        if let Err(e) = vol.SetMute(BOOL::from(true), std::ptr::null()) {
-                            warn!(error = %e, "cannot mute PC speakers");
+                        match vol.SetMute(BOOL::from(true), std::ptr::null()) {
+                            Ok(()) => info!("PC speakers muted while streaming"),
+                            Err(e) => warn!(error = %e, "cannot mute PC speakers"),
                         }
                         Some((vol, was))
                     }
@@ -266,13 +273,60 @@ impl Drop for Loopback {
     }
 }
 
+/// How PC audio is routed while it is streamed (C#: `LoopbackCapture._0003()` and
+/// `IAudioService.SetVirtualAudioDeviceRender`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderRoute {
+    /// Record the default device; the PC keeps playing ("VR headset & computer").
+    Shared,
+    /// Mute the default device while recording it ("VR headset only" without the virtual driver).
+    MuteDefault,
+    /// Make **Speakers (Virtual Desktop Audio)** the default device and record it ("VR headset
+    /// only" with "Use virtual audio driver"); falls back to [`RenderRoute::MuteDefault`].
+    VirtualDefault,
+    /// Record **Speakers (Virtual Desktop Audio)** without changing the default ("VoiceMeeter
+    /// mode": VoiceMeeter routes audio into that device itself).
+    VirtualOnly,
+}
+
+/// Chooses the endpoint to record for a route, switching the default device if required.
+///
+/// # Arguments
+/// * `enumerator` - device enumerator.
+/// * `route` - requested route.
+///
+/// # Returns
+/// `(endpoint id or None for the default device, default-device switch to keep alive, mute)`.
+fn resolve_route(enumerator: &IMMDeviceEnumerator, route: RenderRoute) -> (Option<String>, Option<DefaultSwitch>, bool) {
+    match route {
+        RenderRoute::Shared => (None, None, false),
+        RenderRoute::MuteDefault => (None, None, true),
+        RenderRoute::VirtualDefault | RenderRoute::VirtualOnly => {
+            let Some((id, hidden)) = find_virtual_endpoint(eRender) else {
+                warn!("Speakers (Virtual Desktop Audio) not found; is the Virtual Desktop audio driver installed?");
+                return (None, None, route == RenderRoute::VirtualDefault);
+            };
+            if route == RenderRoute::VirtualOnly {
+                return (Some(id), None, false);
+            }
+            match DefaultSwitch::activate(enumerator, eRender, &id, hidden) {
+                Some(switch) => (Some(id), Some(switch), false),
+                None => {
+                    warn!("cannot make Virtual Desktop Audio the default playback device; muting the PC speakers instead");
+                    (None, None, true)
+                }
+            }
+        }
+    }
+}
+
 /// Body of the "Audio Loopback Thread".
 ///
 /// # Arguments
-/// * `mute` - headset-only mode.
+/// * `route` - audio routing for this session.
 /// * `tx` - packet sink.
 /// * `stop` - stop flag.
-fn loopback_thread(mute: bool, tx: mpsc::Sender<Vec<u8>>, stop: Arc<AtomicBool>) {
+fn loopback_thread(route: RenderRoute, tx: mpsc::Sender<Vec<u8>>, stop: Arc<AtomicBool>) {
     let _com = ComGuard::new();
     // SAFETY: creating the MMDevice enumerator on an initialised COM thread.
     let enumerator: IMMDeviceEnumerator = match unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) } {
@@ -282,9 +336,11 @@ fn loopback_thread(mute: bool, tx: mpsc::Sender<Vec<u8>>, stop: Arc<AtomicBool>)
             return;
         }
     };
+    // Dropped (restoring the previous default device) when the thread ends, before COM is released.
+    let (target, _switch, mute) = resolve_route(&enumerator, route);
     let mut warned = false;
     while !stop.load(Ordering::Relaxed) {
-        let stream = match Loopback::open(&enumerator, mute) {
+        let stream = match Loopback::open(&enumerator, target.as_deref(), mute) {
             Ok(s) => s,
             Err(e) => {
                 if !warned {
@@ -320,7 +376,7 @@ fn loopback_thread(mute: bool, tx: mpsc::Sender<Vec<u8>>, stop: Arc<AtomicBool>)
                 }
             }
             // Follow default-device changes (C#: DefaultDeviceChanged → re-initialise).
-            if last_check.elapsed() > Duration::from_secs(2) {
+            if target.is_none() && last_check.elapsed() > Duration::from_secs(2) {
                 last_check = Instant::now();
                 // SAFETY: enumerator is valid on this thread.
                 let current = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }.map(|d| device_id(&d)).unwrap_or_default();
@@ -345,18 +401,18 @@ impl WasapiCapture {
     /// Starts the loopback thread.
     ///
     /// # Arguments
-    /// * `mute_speakers` - mute the PC's default output while streaming (headset-only mode).
+    /// * `route` - how PC audio is routed while streaming.
     ///
     /// # Returns
     /// The running capture.
     ///
     /// # Errors
     /// [`PlatformError::Io`] if the thread cannot be spawned.
-    pub fn start(mute_speakers: bool) -> Result<Self> {
+    pub fn start(route: RenderRoute) -> Result<Self> {
         let (tx, rx) = mpsc::channel(64);
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
-        let thread = std::thread::Builder::new().name("Audio Loopback Thread".into()).spawn(move || loopback_thread(mute_speakers, tx, flag))?;
+        let thread = std::thread::Builder::new().name("Audio Loopback Thread".into()).spawn(move || loopback_thread(route, tx, flag))?;
         Ok(Self { rx, stop, thread: Some(thread) })
     }
 
@@ -368,7 +424,7 @@ impl WasapiCapture {
         self.rx.recv().await
     }
 
-    /// Stops capturing and restores the speaker mute state.
+    /// Stops capturing and restores the speaker mute state / default device.
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         self.rx.close();
@@ -429,14 +485,36 @@ fn find_vdvad() -> Option<IKsControl> {
     }
 }
 
+/// Makes **Microphone (Virtual Desktop Audio)** the default recording device.
+/// C#: `IAudioService.SetVirtualAudioDeviceCapture` ("Auto-select microphone").
+///
+/// # Returns
+/// The switch (restored on drop), or `None` when unavailable (logged).
+fn select_virtual_microphone() -> Option<DefaultSwitch> {
+    // SAFETY: creating the MMDevice enumerator on an initialised COM thread.
+    let enumerator: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }.ok()?;
+    let Some((id, hidden)) = find_virtual_endpoint(eCapture) else {
+        warn!("Microphone (Virtual Desktop Audio) not found; not changing the default microphone");
+        return None;
+    };
+    let switch = DefaultSwitch::activate(&enumerator, eCapture, &id, hidden);
+    if switch.is_none() {
+        warn!("cannot make Virtual Desktop Audio the default microphone");
+    }
+    switch
+}
+
 /// Body of the microphone thread.
 ///
 /// # Arguments
 /// * `rx` - PCM chunks (gain already applied).
 /// * `stop` - stop flag.
 /// * `ready` - set once the driver was found.
-fn mic_thread(rx: std_mpsc::Receiver<Vec<u8>>, stop: Arc<AtomicBool>, ready: Arc<AtomicBool>) {
+/// * `select_default` - make the virtual microphone the default recording device.
+fn mic_thread(rx: std_mpsc::Receiver<Vec<u8>>, stop: Arc<AtomicBool>, ready: Arc<AtomicBool>, select_default: bool) {
     let _com = ComGuard::new();
+    // Restored when the thread ends, before COM is released.
+    let _switch = if select_default { select_virtual_microphone() } else { None };
     // The original retries 10 × 500 ms while the driver initialises.
     let mut ks = None;
     for _ in 0..10 {
@@ -505,17 +583,21 @@ pub struct KsMicrophone {
 impl KsMicrophone {
     /// Starts the microphone thread (driver discovery happens on that thread).
     ///
+    /// # Arguments
+    /// * `select_default` - make the virtual microphone the default recording device while
+    ///   running ("Auto-select microphone").
+    ///
     /// # Returns
     /// The handle.
     ///
     /// # Errors
     /// [`PlatformError::Io`] if the thread cannot be spawned.
-    pub fn start() -> Result<Self> {
+    pub fn start(select_default: bool) -> Result<Self> {
         let (tx, rx) = std_mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let ready = Arc::new(AtomicBool::new(false));
         let (s, r) = (Arc::clone(&stop), Arc::clone(&ready));
-        let thread = std::thread::Builder::new().name("Microphone Thread".into()).spawn(move || mic_thread(rx, s, r))?;
+        let thread = std::thread::Builder::new().name("Microphone Thread".into()).spawn(move || mic_thread(rx, s, r, select_default))?;
         Ok(Self { tx: Some(tx), stop, ready, thread: Some(thread) })
     }
 
@@ -552,4 +634,16 @@ impl Drop for KsMicrophone {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// Restores default devices left switched by a crashed session (see [`super::endpoint::recover`]).
+/// Runs on a temporary COM thread; call before starting new audio threads.
+pub fn recover_defaults() {
+    let _ = std::thread::Builder::new()
+        .name("Audio Recovery".into())
+        .spawn(|| {
+            let _com = ComGuard::new();
+            super::endpoint::recover();
+        })
+        .map(|t| t.join());
 }
