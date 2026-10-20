@@ -1,0 +1,74 @@
+# Builds the release packages and attaches them to a GitHub release.
+#
+# Runs when a release is published (or manually with a tag name). Produces:
+#   * VirtualDesktopStreamerRust-<version>-setup-x64.exe   (Windows installer, Inno Setup)
+#   * VirtualDesktopStreamerRust-<version>-windows-x64.zip (portable Windows build)
+#   * desktop_streamer-<version>-linux-x86_64.tar.gz       (Linux build with install.sh)
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the packages to (e.g. v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    # Older Ubuntu so the binary runs on older glibc versions.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libudev-dev
+      - name: Build
+        run: cargo build --release --locked
+      - name: Test
+        run: cargo test --workspace --release --locked
+      - name: Package
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          dir="desktop_streamer-$version-linux-x86_64"
+          mkdir -p "$dir"
+          cp target/release/desktop_streamer README.md "$dir/"
+          cp packaging/icons/app.png "$dir/desktop_streamer.png"
+          cp packaging/linux/install.sh packaging/linux/desktop_streamer.desktop packaging/linux/60-desktop-streamer-uinput.rules "$dir/"
+          chmod +x "$dir/install.sh" "$dir/desktop_streamer"
+          tar czf "$dir.tar.gz" "$dir"
+          echo "ASSET=$dir.tar.gz" >> "$GITHUB_ENV"
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "$ASSET" --clobber
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Test
+        run: cargo test --workspace --release --locked
+      - name: Build installer
+        shell: pwsh
+        run: ./packaging/windows/build-installer.ps1
+      - name: Upload
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$env:TAG" (Get-ChildItem dist/*).FullName --clobber

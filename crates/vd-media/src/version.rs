@@ -101,7 +101,8 @@ pub struct Ffmpeg {
 
 /// Returns the candidate executable path for `tool`.
 ///
-/// Order: `$VD_FFMPEG_DIR/<tool>`, then the bare name (resolved through `PATH`).
+/// Order: `$VD_FFMPEG_DIR/<tool>`, next to this executable (also `ffmpeg/` and `ffmpeg/bin/`
+/// below it), then the bare name (resolved through `PATH`).
 ///
 /// # Arguments
 /// * `tool` - `"ffmpeg"` or `"ffprobe"`.
@@ -112,6 +113,14 @@ pub fn tool_path(tool: &str) -> PathBuf {
     let exe = if cfg!(windows) { format!("{tool}.exe") } else { tool.to_owned() };
     if let Some(dir) = std::env::var_os("VD_FFMPEG_DIR") {
         return PathBuf::from(dir).join(exe);
+    }
+    // A copy shipped next to the program (or in its `ffmpeg` folder) wins over `PATH`.
+    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)) {
+        for candidate in [dir.join(&exe), dir.join("ffmpeg").join(&exe), dir.join("ffmpeg").join("bin").join(&exe)] {
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
     }
     PathBuf::from(exe)
 }

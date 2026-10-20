@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Virtual Desktop Streamer (Rust)
+Comment=Stream this computer's desktop to a Virtual Desktop headset
+Exec=@BIN@
+Icon=desktop_streamer
+Terminal=false
+Categories=Network;RemoteAccess;
+StartupWMClass=virtual-desktop-streamer

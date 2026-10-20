@@ -64,6 +64,14 @@ enum Command {
     },
     /// Show the settings file location and contents.
     Config,
+    /// Register or remove the log-in autostart entry and update "Start with Windows"
+    /// (used by the installer, which runs it as the installing user).
+    #[command(hide = true)]
+    Autostart {
+        /// `on` or `off`.
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
 }
 
 /// Account actions.
@@ -282,6 +290,14 @@ fn main() -> Result<()> {
             Command::Config => {
                 println!("{}", StreamerSettings::path().display());
                 println!("{}", serde_json::to_string_pretty(&StreamerSettings::load())?);
+                Ok(())
+            }
+            Command::Autostart { state } => {
+                let enabled = state == "on";
+                vd_platform::system::set_autostart(enabled, &[])?;
+                let mut s = StreamerSettings::load();
+                s.start_with_windows = enabled;
+                s.save()?;
                 Ok(())
             }
         }

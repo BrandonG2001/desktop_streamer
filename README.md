@@ -13,6 +13,31 @@ See [docs/REVERSE_ENGINEERING.md](docs/REVERSE_ENGINEERING.md) for the protocol,
 | `vd-platform` | Input injection, audio devices, monitors, Wi-Fi tuning, priority, shared memory |
 | `desktop_streamer` (root) | The application: settings window and tray icon, connection manager, desktop and video streaming, audio, input, hotkeys, games |
 
+## Install
+
+Download the packages from the [latest release](https://github.com/BrandonG2001/desktop_streamer/releases/latest).
+
+* **Windows 10/11 (x64):** run `VirtualDesktopStreamerRust-<version>-setup-x64.exe`. It installs to
+  Program Files and adds a Start-menu entry. It can also add a firewall rule, start with Windows,
+  and install FFmpeg (and optionally yt-dlp) with winget. A portable `.zip` is also available.
+* **Linux (x86-64):** extract `desktop_streamer-<version>-linux-x86_64.tar.gz` and run
+  `./install.sh --uinput`. This installs to `~/.local` with a menu entry, and grants `/dev/uinput`
+  access for input injection.
+
+PC-audio routing ("VR headset only") and the microphone on Windows use the audio driver installed by
+the official [Virtual Desktop Streamer](https://www.vrdesktop.net). Quit the official streamer
+before starting this one, because they share ports and hotkeys.
+
+## Building packages
+
+* **Windows:** `packaging\windows\build-installer.ps1` builds the release executable, the Inno Setup
+  installer and the portable zip into `dist\`. It requires Inno Setup 6
+  (`winget install JRSoftware.InnoSetup`).
+* **CI:** publishing a GitHub release runs `.github/workflows/release.yml`. The workflow builds
+  the Windows and Linux packages and attaches them to the release.
+* **Icons:** `packaging/make_icon.py` regenerates `packaging/icons/` from the same drawing the
+  window uses.
+
 ## Usage
 
 ```sh
