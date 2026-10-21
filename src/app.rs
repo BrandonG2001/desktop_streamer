@@ -174,6 +174,10 @@ impl App {
     /// The previous settings.
     pub fn update_settings(&self, new: StreamerSettings) -> StreamerSettings {
         let old = std::mem::replace(&mut *self.settings.lock().expect("poisoned"), new.clone());
+        if old.monitor_count != new.monitor_count {
+            // Re-plan the desktop stream with the new number of monitors.
+            self.state.dynamic.send_modify(|_| {});
+        }
         if old.auto_adjust_bitrate != new.auto_adjust_bitrate {
             self.state.streamer.send_modify(|s| s.auto_adjust_bitrate = new.auto_adjust_bitrate);
         }

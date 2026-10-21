@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.0
+
+* **Multiple monitors.** Desktop streaming now shows all monitors at once by default, up to the headset's limit (3 on Quest 3) and with a hardware encoder, like the original. Before, only one monitor was shown.
+  * The headset's add/remove-monitor buttons work, and the choice is remembered.
+  * Adding stops at the physical monitors, because virtual monitors are not ported.
+  * Settings saved by 1.0/1.1 are migrated from 1 monitor to "all".
+  * Fixed: secondary monitors showed only green. Their frames are now always sent as Annex B, like the original. Before, they were converted to length-prefixed NAL units when the headset asked for that format for the main monitor.
+  * Fixed: frozen screens and failed connections with several monitors.
+    * Frames of all monitors are now sent in lockstep with the main monitor's timestamp, like the original's `DesktopStreamer.Update()`. The headset pairs them by timestamp, and independent timestamps stalled its video.
+    * FFmpeg no longer emits duplicate timestamps (`setpts`).
+    * Restarts wait for the old encoder processes to exit, which fixes "Device or resource busy" from screen capture.
+    * If one monitor's encoder stops, all of them are restarted.
+  * Fixed: the headset's remove-monitor button never appeared. `CanRemoveMonitor` was set as the session started and could miss the settings snapshot sent on connect, so it was never sent. Changes made during connection are now always sent.
+  * New OPTIONS → Monitors setting (All / 1 / 2 / 3) to choose the number of monitors from the PC.
+  * Fewer stream restarts: the bitrate ramp-up while the headset measures bandwidth no longer restarts every encoder each time. Big drops still apply immediately, and increases apply at most every 30 s.
+
 ## 1.1.0
 
 * **Driver-free PC audio on Windows.** "VR headset only" no longer needs the Virtual Desktop audio driver:

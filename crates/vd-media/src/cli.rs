@@ -39,9 +39,12 @@ pub fn build_args(ff: &Ffmpeg, capture: &CaptureSpec, enc: &EncoderConfig) -> Ve
     let gpu_frames = cap.gpu_frames;
     let mut args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-nostdin", "-probesize", "32", "-analyzeduration", "0"].iter().map(|s| s.to_string()).collect();
     args.extend(cap.input);
-    if !cap.filter.is_empty() {
-        args.extend(["-vf".to_string(), cap.filter]);
-    }
+    // Number frames at the nominal rate: grabbers such as ddagrab repeat timestamps for
+    // duplicated frames, which the raw muxer rejects ("non monotonically increasing dts"), and
+    // every monitor must produce the same number of frames for lockstep sending.
+    let setpts = format!("setpts=N/({}*TB)", enc.framerate.max(1));
+    let filter = if cap.filter.is_empty() { setpts } else { format!("{},{setpts}", cap.filter) };
+    args.extend(["-vf".to_string(), filter]);
     args.push("-an".to_string());
     args.extend(ff.version.passthrough_timing_args().iter().map(|s| s.to_string()));
     let mut enc_args = enc.encoder_args(ff.version);

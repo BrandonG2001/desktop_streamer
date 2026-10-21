@@ -264,23 +264,21 @@ impl VideoChannel {
         self.core.send(&pkt).await
     }
 
-    /// Sends a secondary-monitor frame (tag 1).
+    /// Sends a secondary-monitor frame (tag 1).  C#: `_009D._0004._0001(ref _008C._0005, IntPtr)`.
+    ///
+    /// Unlike [`VideoChannel::send_frame`], the original never converts secondary frames: they
+    /// are always sent as Annex B (start codes), whatever `SharedMobileSettings.UseAnnexB` says.
+    /// Converting them makes the headset's secondary-monitor decoders show green frames.
     ///
     /// # Arguments
     /// * `timestamp` - capture time.
     /// * `monitor_index` - monitor index ≥ 1.
-    /// * `annex_b` - access unit.
-    /// * `use_annex_b` - see [`VideoChannel::send_frame`].
+    /// * `annex_b` - access unit with start codes, sent as is.
     ///
     /// # Errors
     /// Send errors.
-    pub async fn send_secondary_frame(&self, timestamp: i64, monitor_index: i32, annex_b: &[u8], use_annex_b: bool) -> Result<()> {
-        let pkt = if use_annex_b {
-            proto::encode_secondary_frame(timestamp, monitor_index, annex_b)?
-        } else {
-            proto::encode_secondary_frame(timestamp, monitor_index, &nal::annex_b_to_length_prefixed(annex_b))?
-        };
-        self.core.send(&pkt).await
+    pub async fn send_secondary_frame(&self, timestamp: i64, monitor_index: i32, annex_b: &[u8]) -> Result<()> {
+        self.core.send(&proto::encode_secondary_frame(timestamp, monitor_index, annex_b)?).await
     }
 
     /// Sends the stream descriptor (tag 2).  C#: `_009D._0004._0001(ref _001F._0005)`.

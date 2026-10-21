@@ -211,7 +211,9 @@ async fn on_connected(app: &App, encrypted: bool) {
         d.encrypted = encrypted;
         d.status = ConnectionStatus::Connected;
     });
-    let reload = reload_message(&*app.state.streamer.borrow());
+    let snapshot = app.state.streamer.borrow().clone();
+    crate::dispatch::mark_streamer_settings_sent(snapshot.clone());
+    let reload = reload_message(&snapshot);
     match reload {
         Ok(msg) => app.send(&msg).await,
         Err(e) => warn!(error = %e, "cannot encode settings reload"),

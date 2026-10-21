@@ -8,6 +8,8 @@
 //! ```text
 //! cargo run -- run --direct            # terminal 1 (set Port.CaptureSource = "test" to avoid a display)
 //! cargo run --example headset_sim -- 127.0.0.1 out.h264 10
+//! cargo run --example headset_sim -- 127.0.0.1 out.h264 10 length-prefixed   # like a Quest (UseAnnexB = false)
+//! cargo run --example headset_sim -- 127.0.0.1 out.h264 10 length-prefixed remove-monitor
 //! ```
 
 use std::time::{Duration, Instant};
@@ -47,7 +49,7 @@ async fn connect(host: &str, port: u16) -> std::io::Result<TcpStream> {
     Err(last.unwrap_or_else(|| std::io::Error::other("connect failed")))
 }
 
-/// Entry point: `headset_sim <host> <output file> <seconds>`.
+/// Entry point: `headset_sim <host> <output file> <seconds> [length-prefixed|annex-b] [remove-monitor]`.
 ///
 /// # Errors
 /// I/O errors.
@@ -57,6 +59,8 @@ async fn main() -> std::io::Result<()> {
     let host = args.get(1).cloned().unwrap_or_else(|| "127.0.0.1".into());
     let out_path = args.get(2).cloned().unwrap_or_else(|| "headset_sim.h264".into());
     let seconds: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
+    // `length-prefixed` asks for length-prefixed NAL units like a Quest does (UseAnnexB = false).
+    let annex_b = args.get(4).map(String::as_str) != Some("length-prefixed");
 
     let mut messaging = connect(&host, MESSAGING_PORT).await?;
     println!("messaging connected");
@@ -65,7 +69,7 @@ async fn main() -> std::io::Result<()> {
     mobile.resolution = Size2::new(2064, 2208);
     mobile.desktop_framerate = 30;
     mobile.measured_bandwidth = 20_000_000;
-    mobile.use_annex_b = true;
+    mobile.use_annex_b = annex_b;
     for msg in [reload_message(&mobile).unwrap(), reload_message(&SharedUserSettings::default()).unwrap()] {
         messaging.write_all(&msg.encode().unwrap()).await?;
     }
@@ -111,24 +115,54 @@ async fn main() -> std::io::Result<()> {
         }
     });
     // Control messages from the streamer.
+    let (mut msg_r, mut msg_w) = messaging.into_split();
+    let can_remove = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cr = can_remove.clone();
     tokio::spawn(async move {
         loop {
             let mut header = [0u8; 5];
-            if messaging.read_exact(&mut header).await.is_err() {
+            if msg_r.read_exact(&mut header).await.is_err() {
                 return;
             }
             let (ty, len) = vd_protocol::NetMessage::parse_header(&header).unwrap();
             let mut payload = vec![0u8; len];
-            if messaging.read_exact(&mut payload).await.is_err() {
+            if msg_r.read_exact(&mut payload).await.is_err() {
                 return;
             }
             let msg = vd_protocol::NetMessage { raw_type: ty, payload };
-            println!("message from streamer: {msg} {}", msg.payload_text().unwrap_or_default());
+            let text = msg.payload_text().unwrap_or_default();
+            // CanRemoveMonitor arrives in the full reload or as a property change.
+            if text.contains("\"CanRemoveMonitor\":true") {
+                cr.store(true, std::sync::atomic::Ordering::Relaxed);
+            } else if text.contains("\"CanRemoveMonitor\":false") {
+                cr.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            if text.len() < 200 {
+                println!("message from streamer: {msg} {text}");
+            } else {
+                println!("message from streamer: {msg} ({} bytes)", text.len());
+            }
         }
     });
+    // `remove-monitor` presses the headset's remove-monitor button after 3 s.
+    if args.get(5).map(String::as_str) == Some("remove-monitor") {
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            println!("pressing remove monitor");
+            let msg = vd_protocol::NetMessage::new(vd_protocol::MessageType::RemoveMonitor);
+            let _ = msg_w.write_all(&msg.encode().unwrap()).await;
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            drop(msg_w);
+        });
+    }
 
     let mut out = tokio::fs::File::create(&out_path).await?;
     let deadline = Instant::now() + Duration::from_secs(seconds);
+    // Frames of monitors 1, 2, … (monitor 0 uses full frame headers).
+    let mut secondary: std::collections::BTreeMap<i32, u64> = std::collections::BTreeMap::new();
+    let mut secondary_bad = 0u64;
+    let mut secondary_unpaired = 0u64;
+    let mut primary_times: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let (mut frames, mut keyframes, mut bytes) = (0u64, 0u64, 0u64);
     let mut latency_sum = 0f64;
     while Instant::now() < deadline {
@@ -141,8 +175,13 @@ async fn main() -> std::io::Result<()> {
                 let mut h = [0u8; FrameHeader::SIZE];
                 video.read_exact(&mut h).await?;
                 let header = FrameHeader::from_bytes(&h).unwrap();
+                primary_times.insert(header.timestamp);
                 let mut payload = vec![0u8; header.payload_size as usize];
                 video.read_exact(&mut payload).await?;
+                if !annex_b {
+                    // Primary frames follow UseAnnexB: convert back for the output file.
+                    payload = vd_protocol::nal::length_prefixed_to_annex_b(&payload).unwrap_or_default();
+                }
                 let nals = vd_protocol::nal::split_annex_b(&payload);
                 if nals.iter().any(|n| vd_protocol::nal::is_keyframe_nal(vd_protocol::nal::Bitstream::H264, n) || vd_protocol::nal::is_keyframe_nal(vd_protocol::nal::Bitstream::Hevc, n)) {
                     keyframes += 1;
@@ -158,6 +197,15 @@ async fn main() -> std::io::Result<()> {
                 let header: SecondaryFrameHeader = bytemuck::pod_read_unaligned(&h);
                 let mut payload = vec![0u8; header.payload_size as usize];
                 video.read_exact(&mut payload).await?;
+                *secondary.entry(header.monitor_index).or_insert(0u64) += 1;
+                // The headset pairs secondary frames with the primary frame of the same timestamp.
+                if !primary_times.contains(&header.timestamp) {
+                    secondary_unpaired += 1;
+                }
+                // The headset decodes secondary monitors as Annex B (start codes), always.
+                if !(payload.starts_with(&[0, 0, 0, 1]) || payload.starts_with(&[0, 0, 1])) {
+                    secondary_bad += 1;
+                }
             }
             video_tag::DESCRIPTOR => {
                 let mut d = [0u8; StreamDescriptor::SIZE];
@@ -184,6 +232,14 @@ async fn main() -> std::io::Result<()> {
         }
     }
     out.flush().await?;
+    println!("headset sees CanRemoveMonitor = {}", can_remove.load(std::sync::atomic::Ordering::Relaxed));
+    for (monitor, n) in &secondary {
+        println!("monitor {monitor}: {n} secondary frames");
+    }
+    if !secondary.is_empty() {
+        println!("secondary frames without an Annex B start code: {secondary_bad}");
+        println!("secondary frames without a primary frame of the same timestamp: {secondary_unpaired}");
+    }
     println!(
         "received {frames} frames ({keyframes} key frames), {:.1} kB video, {} bytes audio, mean encoder latency {:.1} ms -> {out_path}",
         bytes as f64 / 1000.0,

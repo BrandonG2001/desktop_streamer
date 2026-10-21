@@ -72,11 +72,18 @@ pub struct PortOptions {
     /// Create PulseAudio/PipeWire virtual devices.
     #[serde(rename = "ManageAudioDevices", default = "t")]
     pub manage_audio_devices: bool,
+    /// Version of this settings file's layout, for one-time migrations ([`SETTINGS_VERSION`]).
+    #[serde(rename = "SettingsVersion")]
+    pub settings_version: u32,
     /// Where the headset microphone goes on Windows: `auto` (Virtual Desktop driver, else a
     /// virtual cable), `vdvad`, or the endpoint id of a virtual cable's playback device.
     #[serde(rename = "MicrophoneDevice", default = "mic_auto")]
     pub microphone_device: String,
 }
+
+/// Current settings layout version.  1: `MonitorCount` 0 means "all monitors" (earlier builds
+/// stored 1 without any way to change it).
+pub const SETTINGS_VERSION: u32 = 1;
 
 /// Serde default for `Port.MicrophoneDevice`.
 fn mic_auto() -> String {
@@ -102,6 +109,8 @@ impl Default for PortOptions {
             keyframe_interval_seconds: 2,
             manage_audio_devices: true,
             microphone_device: mic_auto(),
+            // Raised by `StreamerSettings::migrate` after loading.
+            settings_version: 0,
         }
     }
 }
@@ -167,7 +176,9 @@ pub struct StreamerSettings {
     /// Folder where headset screenshots are saved.
     #[serde(rename = "ScreenshotsRootPath")]
     pub screenshots_root_path: Option<String>,
-    /// Number of monitors to stream.
+    /// Number of monitors to stream; 0 = all monitors the headset supports (C#: the field starts
+    /// at 0 and is filled in when the monitors are first enumerated).  Changed by the headset's
+    /// add/remove-monitor buttons.
     #[serde(rename = "MonitorCount")]
     pub monitor_count: i32,
     /// Raise process priority while streaming (`BoostGamePriority`).
@@ -246,7 +257,7 @@ impl Default for StreamerSettings {
             codec_name: None,
             videos_root_path: None,
             screenshots_root_path: None,
-            monitor_count: 1,
+            monitor_count: 0,
             boost_priority: false,
             selected_tab: 0,
             start_with_windows: true,
@@ -298,13 +309,26 @@ impl StreamerSettings {
     /// # Returns
     /// The settings.
     pub fn load() -> Self {
-        match std::fs::read_to_string(Self::path()) {
+        let mut s = match std::fs::read_to_string(Self::path()) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "invalid settings file, using defaults");
                 Self::default()
             }),
             Err(_) => Self::default(),
+        };
+        s.migrate();
+        s
+    }
+
+    /// Upgrades settings written by older builds of the port.
+    fn migrate(&mut self) {
+        if self.port.settings_version < 1 {
+            // 1.0/1.1 always stored MonitorCount = 1; restore the original's "all monitors" default.
+            if self.monitor_count == 1 {
+                self.monitor_count = 0;
+            }
         }
+        self.port.settings_version = SETTINGS_VERSION;
     }
 
     /// Saves the settings (indented JSON, owner-only permissions on Unix).
@@ -422,5 +446,15 @@ mod tests {
         assert_eq!(s.preferred_codec, VideoCodec::HEVC10bit);
         assert!(s.allow_remote_connections);
         assert_eq!(s.access_tokens().len(), 1);
+    }
+
+    #[test]
+    fn migrates_single_monitor_default() {
+        let mut old: StreamerSettings = serde_json::from_str(r#"{"MonitorCount":1}"#).unwrap();
+        old.migrate();
+        assert_eq!(old.monitor_count, 0);
+        let mut chosen: StreamerSettings = serde_json::from_str(r#"{"MonitorCount":1,"Port":{"SettingsVersion":1}}"#).unwrap();
+        chosen.migrate();
+        assert_eq!(chosen.monitor_count, 1, "a count chosen after the migration is kept");
     }
 }

@@ -418,6 +418,10 @@ impl SettingsWindow {
                         .on_hover_text("Improves compression quality but uses some GPU horsepower to do so\nOnly use when you have performance headroom to spare");
                 }
                 ui.add_space(8.0);
+                section(ui, "Monitors");
+                combo(ui, "monitors", &mut s.monitor_count, &[(0, "All"), (1, "1"), (2, "2"), (3, "3")]);
+                ui.label(RichText::new("Monitors shown in the headset at once (also changed with + / − in VR)").size(11.0).color(theme::TEXT_DIM));
+                ui.add_space(8.0);
                 section(ui, "OpenXR Runtime");
                 combo(ui, "openxr", &mut s.openxr_runtime, &[(OpenXrRuntime::Automatic, "Automatic"), (OpenXrRuntime::SteamVR, "SteamVR"), (OpenXrRuntime::VDXR, "VDXR")]);
                 ui.add_space(8.0);

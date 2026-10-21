@@ -8,8 +8,11 @@
 //!
 //! Sizing rules reproduced here:
 //!
-//! * monitor count = `min(monitors, max_monitors(hmd), max(1, MonitorCount))`, and 1 without a
-//!   hardware encoder;
+//! * monitor count = `min(monitors, max_monitors(hmd), MonitorCount)` (`MonitorCount` 0 = all),
+//!   and 1 without a hardware encoder;
+//! * the headset's add/remove-monitor buttons change `MonitorCount` ([`change_monitor_count`]);
+//!   adding stops at the physical monitors because virtual monitors (`IVirtualMonitor`, the
+//!   original's IddCx display driver) are not ported;
 //! * each monitor is scaled down (aspect preserved) to the pixel budget of
 //!   `max_desktop_resolution(hmd, count)`;
 //! * frame rate = `min(display refresh, SharedMobileSettings.DesktopFramerate)`;
@@ -78,16 +81,12 @@ pub fn plan(app: &App, media: &MediaEnv) -> Option<StreamPlan> {
     let mobile = app.state.mobile.borrow().clone();
     let user = app.state.user.borrow().clone();
     let dynamic = app.state.dynamic.borrow().clone();
-    let (preferred, monitor_count) = {
-        let s = app.settings.lock().expect("poisoned");
-        (s.preferred_codec, s.monitor_count)
-    };
+    let preferred = app.settings.lock().expect("poisoned").preferred_codec;
     let hmd_type = mobile.hmd_type;
     if dynamic.monitors.is_empty() {
         return None;
     }
-    let max = hmd::max_monitors(hmd_type).min(dynamic.monitors.len() as i32);
-    let count = if media.backend.is_hardware() { max.min(monitor_count.max(1)).max(1) } else { 1 } as usize;
+    let count = monitor_count(app, media.backend.is_hardware()).1 as usize;
     let (mw, mh) = hmd::max_desktop_resolution(hmd_type, count as i32);
     let budget = i64::from(mw) * i64::from(mh);
     let mut monitors = Vec::with_capacity(count);
@@ -111,6 +110,47 @@ pub fn plan(app: &App, media: &MediaEnv) -> Option<StreamPlan> {
         use_annex_b: mobile.use_annex_b,
         keyframe_generation: dynamic.keyframe_requests,
     })
+}
+
+/// Monitors that can be streamed and how many are, from `MonitorCount`.
+/// C#: `MonitorCount = HasHardwareEncoder ? min(MonitorCount, MaxMonitors(hmd)) : 1`, with
+/// 0 filled in as "all monitors" (`DynamicSettings.Monitors` setter).
+///
+/// # Arguments
+/// * `app` - application context.
+/// * `hardware` - a hardware encoder is in use (multi-monitor needs one).
+///
+/// # Returns
+/// `(maximum, current)`, both at least 1.
+pub fn monitor_count(app: &App, hardware: bool) -> (i32, i32) {
+    let monitors = app.state.dynamic.borrow().monitors.len() as i32;
+    let max = if hardware { hmd::max_monitors(app.state.mobile.borrow().hmd_type).min(monitors).max(1) } else { 1 };
+    let wanted = app.settings.lock().expect("poisoned").monitor_count;
+    let current = if wanted <= 0 { max } else { wanted.min(max) };
+    (max, current.max(1))
+}
+
+/// Handles the headset's add/remove-monitor buttons (C#: `DesktopStreamer._0005()` /
+/// `_0006()`): changes `MonitorCount` and restarts the stream with the new layout.
+///
+/// # Arguments
+/// * `app` - application context.
+/// * `delta` - `+1` (AddMonitor) or `-1` (RemoveMonitor).
+pub fn change_monitor_count(app: &App, delta: i32) {
+    let hardware = app.media.get().is_some_and(|m| m.backend.is_hardware());
+    let (max, current) = monitor_count(app, hardware);
+    let new = (current + delta).clamp(1, max);
+    if new == current {
+        if delta > 0 {
+            warn!(max, "cannot add a monitor: all physical monitors are streamed (virtual monitors are not supported by this port)");
+        }
+        return;
+    }
+    info!(from = current, to = new, "monitor count changed by the headset");
+    app.settings.lock().expect("poisoned").monitor_count = new;
+    app.save_settings();
+    // Wake the streaming loop so it re-plans with the new monitor count.
+    app.state.dynamic.send_modify(|_| {});
 }
 
 /// Maps the configured capture source to a [`CaptureSource`] for one monitor.
@@ -149,22 +189,31 @@ pub fn capture_source(app: &App, media: &MediaEnv, m: &MonitorInfo) -> CaptureSo
     }
 }
 
+/// A running encoder pipeline: its task and the signal that stops it.
+struct Pipeline {
+    task: tokio::task::JoinHandle<()>,
+    stop: tokio::sync::oneshot::Sender<()>,
+}
+
+/// Output of a pipeline task: a frame, or `None` when its encoder process ended.
+type PipelineEvent = (usize, Option<EncodedFrame>);
+
 /// Starts one pipeline per monitor and forwards frames to `tx` tagged with the monitor index.
 ///
 /// # Arguments
 /// * `app` - application context.
 /// * `media` - encoder environment.
 /// * `plan` - stream plan.
-/// * `tx` - frame sink.
+/// * `tx` - event sink.
 ///
 /// # Returns
-/// The started pipelines (kept to stop them later).
-fn start_pipelines(app: &App, media: &MediaEnv, plan: &StreamPlan, tx: &mpsc::Sender<(usize, EncodedFrame)>) -> Vec<tokio::task::JoinHandle<()>> {
+/// The started pipelines (stopped with [`stop_pipelines`]).
+fn start_pipelines(app: &App, media: &MediaEnv, plan: &StreamPlan, tx: &mpsc::Sender<PipelineEvent>) -> Vec<Pipeline> {
     let (gop_secs, render_node, aq, two_pass) = {
         let s = app.settings.lock().expect("poisoned");
         (s.port.keyframe_interval_seconds.max(1), s.port.render_node.clone(), s.enable_aq, s.enable_2pass)
     };
-    let mut tasks = Vec::new();
+    let mut pipelines = Vec::new();
     for (i, (m, size)) in plan.monitors.iter().enumerate() {
         let capture = CaptureSpec {
             source: capture_source(app, media, m),
@@ -194,16 +243,97 @@ fn start_pipelines(app: &App, media: &MediaEnv, plan: &StreamPlan, tx: &mpsc::Se
             }
         };
         let tx = tx.clone();
-        tasks.push(tokio::spawn(async move {
-            while let Some(frame) = pipeline.next_frame().await {
-                if tx.send((i, frame)).await.is_err() {
-                    break;
+        let (stop, mut stop_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    f = pipeline.next_frame() => {
+                        let ended = f.is_none();
+                        if tx.send((i, f)).await.is_err() || ended {
+                            break;
+                        }
+                    }
+                    _ = &mut stop_rx => break,
                 }
             }
+            // Wait for the process to exit so the screen capture is released before a restart.
             pipeline.stop().await;
-        }));
+        });
+        pipelines.push(Pipeline { task, stop });
     }
-    tasks
+    pipelines
+}
+
+/// Stops pipelines and waits until their encoder processes have exited (otherwise a restarted
+/// ddagrab fails with "Device or resource busy" while the old process still holds the output).
+///
+/// # Arguments
+/// * `pipelines` - pipelines to stop.
+async fn stop_pipelines(pipelines: Vec<Pipeline>) {
+    let tasks: Vec<_> = pipelines
+        .into_iter()
+        .map(|p| {
+            let _ = p.stop.send(());
+            p.task
+        })
+        .collect();
+    for t in tasks {
+        let _ = tokio::time::timeout(Duration::from_secs(3), t).await;
+    }
+}
+
+/// Frames a lagging monitor may fall behind before the others are sent without it.
+const MAX_MONITOR_SKEW: usize = 4;
+
+/// Groups frames of all monitors into ticks, like the original's `DesktopStreamer.Update()`:
+/// every tick sends one frame per monitor, and all of them carry the timestamp of monitor 0's
+/// frame.  The headset pairs secondary-monitor frames with the primary frame by timestamp;
+/// independent timestamps per encoder stall its video pipeline (frozen screens).
+#[derive(Debug)]
+struct Lockstep {
+    queues: Vec<std::collections::VecDeque<EncodedFrame>>,
+}
+
+impl Lockstep {
+    /// Creates the grouper.
+    ///
+    /// # Arguments
+    /// * `monitors` - number of monitors.
+    ///
+    /// # Returns
+    /// An empty grouper.
+    fn new(monitors: usize) -> Self {
+        Self { queues: (0..monitors).map(|_| std::collections::VecDeque::new()).collect() }
+    }
+
+    /// Queues a frame of monitor `idx`.
+    ///
+    /// # Arguments
+    /// * `idx` - monitor index.
+    /// * `frame` - encoded frame.
+    fn push(&mut self, idx: usize, frame: EncodedFrame) {
+        if let Some(q) = self.queues.get_mut(idx) {
+            q.push_back(frame);
+        }
+    }
+
+    /// Takes the next tick, if one is complete.
+    ///
+    /// A tick is complete when every monitor has a frame.  If a secondary monitor falls more than
+    /// [`MAX_MONITOR_SKEW`] frames behind monitor 0, the tick is sent without it so one slow
+    /// encoder cannot freeze the others.
+    ///
+    /// # Returns
+    /// `(monitor index, frame)` pairs, monitor 0 first, all to be sent with monitor 0's timestamp.
+    fn next_tick(&mut self) -> Option<Vec<(usize, EncodedFrame)>> {
+        let primary_ready = !self.queues.first()?.is_empty();
+        let all_ready = self.queues.iter().all(|q| !q.is_empty());
+        let lagging = primary_ready && self.queues[0].len() > MAX_MONITOR_SKEW;
+        if !(all_ready || lagging) {
+            return None;
+        }
+        Some(self.queues.iter_mut().enumerate().filter_map(|(i, q)| q.pop_front().map(|f| (i, f))).collect())
+    }
 }
 
 /// Sends the stream descriptor for `plan`.
@@ -223,6 +353,30 @@ async fn send_descriptor(app: &App, plan: &StreamPlan) {
     }
 }
 
+/// Sends one tick: monitor 0 with a full frame header, the others as secondary frames with the
+/// same timestamp.
+///
+/// # Arguments
+/// * `app` - application context.
+/// * `plan` - stream plan.
+/// * `tick` - frames of the tick, monitor 0 first (if present).
+///
+/// # Errors
+/// Video channel send errors.
+async fn send_tick(app: &App, plan: &StreamPlan, tick: Vec<(usize, EncodedFrame)>) -> vd_net::error::Result<()> {
+    let timestamp = tick.first().map(|(_, f)| f.capture_time).unwrap_or_else(vd_media::now_ticks);
+    for (idx, frame) in tick {
+        if idx == 0 {
+            let mut header = FrameHeader::desktop(timestamp, app.headset_frame(), StreamingSource::Desktop, HapticFeedback::default(), HapticFeedback::default());
+            header.encode_latency_ms = frame.encode_latency_ms;
+            app.channels.video.send_frame(header, &frame.data, plan.use_annex_b).await?;
+        } else {
+            app.channels.video.send_secondary_frame(timestamp, idx as i32, &frame.data).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Streams with `plan` until the plan becomes stale or the session ends.
 ///
 /// # Arguments
@@ -234,15 +388,20 @@ async fn stream(app: &Arc<App>, media: &MediaEnv, plan: StreamPlan) {
     app.state.streamer.send_modify(|s| {
         s.active_codec = plan.codec;
         s.can_switch_monitor = app.state.dynamic.borrow().monitors.len() > 1;
-        s.can_add_monitor = false;
-        s.can_remove_monitor = false;
+        // C#: DesktopStreamer._0008() — buttons only with a hardware encoder; adding is limited to
+        // physical monitors here.
+        let hardware = media.backend.is_hardware();
+        let (max, current) = monitor_count(app, hardware);
+        s.can_add_monitor = hardware && current < max;
+        s.can_remove_monitor = hardware && current > 1;
     });
     app.settings.lock().expect("poisoned").codec_name = Some(plan.codec.display_name().to_owned());
     send_descriptor(app, &plan).await;
-    let (tx, mut rx) = mpsc::channel(8);
-    let tasks = start_pipelines(app, media, &plan, &tx);
+    let (tx, mut rx) = mpsc::channel::<PipelineEvent>(8 * plan.monitors.len().max(1));
+    let pipelines = start_pipelines(app, media, &plan, &tx);
     drop(tx);
-    if tasks.is_empty() {
+    if pipelines.len() != plan.monitors.len() {
+        stop_pipelines(pipelines).await;
         tokio::time::sleep(Duration::from_secs(2)).await;
         return;
     }
@@ -250,32 +409,34 @@ async fn stream(app: &Arc<App>, media: &MediaEnv, plan: StreamPlan) {
     let mut mob_rx = app.state.mobile.subscribe();
     let mut user_rx = app.state.user.subscribe();
     let mut str_rx = app.state.streamer.subscribe();
+    let mut lockstep = Lockstep::new(plan.monitors.len());
+    let started = std::time::Instant::now();
     let mut frames_sent: u64 = 0;
-    loop {
+    'session: loop {
         tokio::select! {
-            f = rx.recv() => {
-                let Some((idx, frame)) = f else {
+            ev = rx.recv() => {
+                let Some((idx, Some(frame))) = ev else {
+                    // One encoder exited: restart them all so no monitor stays frozen.
                     if frames_sent == 0 {
-                        // The encoder died before producing anything (bad options, capture
-                        // unavailable…): back off instead of respawning FFmpeg in a tight loop.
-                        warn!("encoder pipeline produced no frames; retrying in 3 s");
-                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        // The encoder died before producing anything (bad options, or the screen
+                        // capture still held by a just-stopped process): back off briefly instead
+                        // of respawning FFmpeg in a tight loop.
+                        warn!("encoder pipeline produced no frames; retrying in 1 s");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    } else {
+                        warn!(monitor = ev.map(|(i, _)| i), "encoder pipeline stopped; restarting desktop streaming");
                     }
                     break;
                 };
-                frames_sent += 1;
-                if frames_sent == 1 {
-                    info!(bytes = frame.data.len(), keyframe = frame.keyframe, "first video frame sent");
-                }
-                let res = if idx == 0 {
-                    let mut header = FrameHeader::desktop(frame.capture_time, app.headset_frame(), StreamingSource::Desktop, HapticFeedback::default(), HapticFeedback::default());
-                    header.encode_latency_ms = frame.encode_latency_ms;
-                    app.channels.video.send_frame(header, &frame.data, plan.use_annex_b).await
-                } else {
-                    app.channels.video.send_secondary_frame(frame.capture_time, idx as i32, &frame.data, plan.use_annex_b).await
-                };
-                if res.is_err() {
-                    break;
+                lockstep.push(idx, frame);
+                while let Some(tick) = lockstep.next_tick() {
+                    frames_sent += 1;
+                    if frames_sent == 1 {
+                        info!(bytes = tick[0].1.data.len(), keyframe = tick[0].1.keyframe, "first video frame sent");
+                    }
+                    if send_tick(app, &plan, tick).await.is_err() {
+                        break 'session;
+                    }
                 }
             }
             _ = dyn_rx.changed() => {}
@@ -285,29 +446,35 @@ async fn stream(app: &Arc<App>, media: &MediaEnv, plan: StreamPlan) {
         }
         let still_valid = app.state.dynamic.borrow().is_connected
             && app.state.streaming_source() == StreamingSource::Desktop
-            && plan_matches(app, media, &plan);
+            && plan_matches(app, media, &plan, started);
         if !still_valid {
             break;
         }
     }
-    for t in tasks {
-        t.abort();
-    }
+    stop_pipelines(pipelines).await;
 }
 
-/// Reports whether a freshly computed plan equals `plan` (bitrate changes under 10 % are ignored
-/// to avoid restarting the CLI encoder for every bandwidth update).
+/// Minimum time a stream runs before a higher bitrate restarts it.
+const BITRATE_RAISE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Reports whether a freshly computed plan equals `plan` (small bitrate changes are ignored to
+/// avoid restarting the CLI encoders for every bandwidth update).
 ///
 /// # Arguments
 /// * `app` - application context.
 /// * `media` - encoder environment.
 /// * `plan` - current plan.
+/// * `started` - when streaming with `plan` began.
 ///
 /// # Returns
 /// `true` if streaming can continue unchanged.
-fn plan_matches(app: &App, media: &MediaEnv, plan: &StreamPlan) -> bool {
+fn plan_matches(app: &App, media: &MediaEnv, plan: &StreamPlan, started: std::time::Instant) -> bool {
     let Some(new) = self::plan(app, media) else { return false };
-    let bitrate_close = (f64::from(new.bitrate) - f64::from(plan.bitrate)).abs() <= f64::from(plan.bitrate) * 0.1;
+    // Each restart re-encodes every monitor from a key frame (a visible hitch), so the bitrate
+    // the headset ramps up while measuring bandwidth only restarts for big drops (congestion)
+    // or for a big increase at most every BITRATE_RAISE_INTERVAL.
+    let (old, now) = (f64::from(plan.bitrate), f64::from(new.bitrate));
+    let bitrate_close = if now < old { now >= old * 0.75 } else { now <= old * 1.5 || started.elapsed() < BITRATE_RAISE_INTERVAL };
     new.codec == plan.codec
         && new.framerate == plan.framerate
         && new.monitors == plan.monitors
@@ -357,5 +524,37 @@ pub async fn run(app: Arc<App>) {
             _ = str_rx.changed() => {}
             _ = tokio::time::sleep(Duration::from_secs(1)) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(t: i64) -> EncodedFrame {
+        EncodedFrame { data: vec![0, 0, 0, 1], keyframe: false, capture_time: t, encode_latency_ms: 0.0 }
+    }
+
+    #[test]
+    fn ticks_wait_for_every_monitor() {
+        let mut l = Lockstep::new(3);
+        l.push(0, frame(10));
+        l.push(1, frame(11));
+        assert!(l.next_tick().is_none(), "monitor 2 has no frame yet");
+        l.push(2, frame(12));
+        let tick = l.next_tick().unwrap();
+        assert_eq!(tick.iter().map(|(i, _)| *i).collect::<Vec<_>>(), [0, 1, 2]);
+        assert!(l.next_tick().is_none());
+    }
+
+    #[test]
+    fn a_lagging_monitor_does_not_freeze_the_others() {
+        let mut l = Lockstep::new(2);
+        for t in 0..=MAX_MONITOR_SKEW as i64 {
+            l.push(0, frame(t));
+        }
+        let tick = l.next_tick().unwrap();
+        assert_eq!(tick.len(), 1, "sent without the lagging monitor");
+        assert_eq!(tick[0].0, 0);
     }
 }

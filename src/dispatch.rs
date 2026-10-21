@@ -72,6 +72,17 @@ impl LastSent {
 
 static LAST_SENT: LastSent = LastSent(std::sync::Mutex::new(None));
 
+/// Records the settings sent to the headset in a full reload, so later changes are sent as diffs
+/// against exactly that snapshot.  Called by `connection::on_connected` with the same value it
+/// encodes; taking a separate snapshot later would silently drop changes made in between
+/// (e.g. `CanRemoveMonitor`, set by the desktop stream as the session starts).
+///
+/// # Arguments
+/// * `sent` - the settings the reload carried.
+pub fn mark_streamer_settings_sent(sent: SharedStreamerSettings) {
+    LAST_SENT.with_value(|l| *l = Some(sent));
+}
+
 /// Mirrors local changes of `SharedStreamerSettings` to the headset (`OnPropertyChanged` →
 /// `*PropertyChanged` message).
 ///
@@ -80,23 +91,16 @@ static LAST_SENT: LastSent = LastSent(std::sync::Mutex::new(None));
 pub async fn sync_streamer_settings(app: Arc<App>) {
     let mut rx = app.state.streamer.subscribe();
     let mut dyn_rx = app.state.dynamic.subscribe();
-    let mut was_connected = false;
     loop {
+        // A new session receives a full reload from `connection::on_connected`, which records
+        // that snapshot ([`mark_streamer_settings_sent`]); every check diffs against it, so a
+        // change made while the session starts is never lost.
         tokio::select! {
             r = rx.changed() => if r.is_err() { return },
-            r = dyn_rx.changed() => {
-                if r.is_err() { return }
-                // A new session receives a full reload from `connection::on_connected`; diffs
-                // start from that snapshot.
-                let connected = dyn_rx.borrow().is_connected;
-                if connected && !was_connected {
-                    LAST_SENT.with_value(|l| *l = Some(app.state.streamer.borrow().clone()));
-                }
-                was_connected = connected;
-                continue;
-            }
+            r = dyn_rx.changed() => if r.is_err() { return },
         }
         if !app.state.dynamic.borrow().is_connected {
+            LAST_SENT.with_value(|l| *l = None);
             continue;
         }
         let cur = rx.borrow().clone();
@@ -194,7 +198,8 @@ pub async fn run(app: Arc<App>, mut rx: mpsc::UnboundedReceiver<NetMessage>) {
             }
             Request::Simple(MessageType::Disconnect) => app.channels.messaging.reset().await,
             Request::Simple(MessageType::DisposeGamepadEmulation) => crate::input_task::release_gamepad(),
-            Request::Simple(t @ (MessageType::AddMonitor | MessageType::RemoveMonitor)) => warn!(?t, "virtual monitors are not supported by this port"),
+            Request::Simple(MessageType::AddMonitor) => crate::desktop::change_monitor_count(&app, 1),
+            Request::Simple(MessageType::RemoveMonitor) => crate::desktop::change_monitor_count(&app, -1),
             Request::Simple(t @ (MessageType::ToggleDictation | MessageType::ChangeLanguage)) => debug!(?t, "Windows shell shortcut not supported"),
             Request::SetMonitorPortrait { index, portrait } => warn!(index, portrait, "monitor rotation is not supported by this port"),
             Request::Screenshot { name, data } => save_screenshot(&app, &name, &data),
