@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use vd_media::EncodedFrame;
 use vd_media::capture::{CaptureSource, CaptureSpec, Region};
 use vd_media::cli::CliVideoPipeline;
@@ -336,20 +336,32 @@ impl Lockstep {
     }
 }
 
-/// Sends the stream descriptor for `plan`.
+/// Sends the stream descriptor for `plan` unless the headset already has the same one.
+///
+/// The original sends the descriptor only when its encoders are (re)created
+/// (`DesktopStreamer` initialisation); a key-frame request (`RestartStreaming` →
+/// `ForceKeyFrame`) does not send it.  This port restarts FFmpeg to get a key frame, but must not
+/// re-send an identical descriptor: the headset treats it as a new stream and rebuilds the scene,
+/// resetting the environment to the black void (e.g. after recentring with the Meta button).
 ///
 /// # Arguments
 /// * `app` - application context.
 /// * `plan` - stream plan.
-async fn send_descriptor(app: &App, plan: &StreamPlan) {
+/// * `last` - descriptor last sent in this session (`None` at the start of a session).
+async fn send_descriptor(app: &App, plan: &StreamPlan, last: &mut Option<StreamDescriptor>) {
     let monitors: Vec<(Size2, Rect)> = plan
         .monitors
         .iter()
         .map(|(m, s)| (*s, Rect { x: m.x, y: m.y, width: m.width as i32, height: m.height as i32 }))
         .collect();
     let d = StreamDescriptor::desktop(plan.codec, plan.framerate as i32, &monitors);
-    if let Err(e) = app.channels.video.send_descriptor(&d).await {
-        warn!(error = %e, "cannot send stream descriptor");
+    if last.as_ref() == Some(&d) {
+        debug!("stream parameters unchanged; not re-sending the stream descriptor");
+        return;
+    }
+    match app.channels.video.send_descriptor(&d).await {
+        Ok(()) => *last = Some(d),
+        Err(e) => warn!(error = %e, "cannot send stream descriptor"),
     }
 }
 
@@ -383,7 +395,8 @@ async fn send_tick(app: &App, plan: &StreamPlan, tick: Vec<(usize, EncodedFrame)
 /// * `app` - application context.
 /// * `media` - encoder environment.
 /// * `plan` - stream plan.
-async fn stream(app: &Arc<App>, media: &MediaEnv, plan: StreamPlan) {
+/// * `last_descriptor` - descriptor last sent in this session (see [`send_descriptor`]).
+async fn stream(app: &Arc<App>, media: &MediaEnv, plan: StreamPlan, last_descriptor: &mut Option<StreamDescriptor>) {
     info!(codec = plan.codec.display_name(), fps = plan.framerate, bitrate = plan.bitrate, monitors = plan.monitors.len(), "desktop streaming");
     app.state.streamer.send_modify(|s| {
         s.active_codec = plan.codec;
@@ -396,7 +409,7 @@ async fn stream(app: &Arc<App>, media: &MediaEnv, plan: StreamPlan) {
         s.can_remove_monitor = hardware && current > 1;
     });
     app.settings.lock().expect("poisoned").codec_name = Some(plan.codec.display_name().to_owned());
-    send_descriptor(app, &plan).await;
+    send_descriptor(app, &plan, last_descriptor).await;
     let (tx, mut rx) = mpsc::channel::<PipelineEvent>(8 * plan.monitors.len().max(1));
     let pipelines = start_pipelines(app, media, &plan, &tx);
     drop(tx);
@@ -500,10 +513,15 @@ pub async fn run(app: Arc<App>) {
     let mut dyn_rx = app.state.dynamic.subscribe();
     let mut mob_rx = app.state.mobile.subscribe();
     let mut str_rx = app.state.streamer.subscribe();
+    let mut last_descriptor: Option<StreamDescriptor> = None;
     while !app.is_shutting_down() {
         let ready = app.state.dynamic.borrow().is_connected
             && app.state.streaming_source() == StreamingSource::Desktop
             && app.state.mobile.borrow().hmd_type != vd_protocol::types::HmdType::UNKNOWN;
+        if !ready {
+            // New session, or the video/VR streamer sent its own descriptor: send ours again.
+            last_descriptor = None;
+        }
         if ready {
             if app.state.dynamic.borrow().monitors.is_empty() {
                 let fb = {
@@ -514,7 +532,7 @@ pub async fn run(app: Arc<App>) {
                 app.state.dynamic.send_modify(|d| d.monitors = monitors);
             }
             if let Some(p) = plan(&app, &media) {
-                stream(&app, &media, p).await;
+                stream(&app, &media, p, &mut last_descriptor).await;
                 continue;
             }
         }

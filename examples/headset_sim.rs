@@ -10,6 +10,7 @@
 //! cargo run --example headset_sim -- 127.0.0.1 out.h264 10
 //! cargo run --example headset_sim -- 127.0.0.1 out.h264 10 length-prefixed   # like a Quest (UseAnnexB = false)
 //! cargo run --example headset_sim -- 127.0.0.1 out.h264 10 length-prefixed remove-monitor
+//! cargo run --example headset_sim -- 127.0.0.1 out.h264 10 length-prefixed restart-streaming
 //! ```
 
 use std::time::{Duration, Instant};
@@ -49,7 +50,7 @@ async fn connect(host: &str, port: u16) -> std::io::Result<TcpStream> {
     Err(last.unwrap_or_else(|| std::io::Error::other("connect failed")))
 }
 
-/// Entry point: `headset_sim <host> <output file> <seconds> [length-prefixed|annex-b] [remove-monitor]`.
+/// Entry point: `headset_sim <host> <output file> <seconds> [length-prefixed|annex-b] [remove-monitor|restart-streaming]`.
 ///
 /// # Errors
 /// I/O errors.
@@ -144,12 +145,18 @@ async fn main() -> std::io::Result<()> {
             }
         }
     });
-    // `remove-monitor` presses the headset's remove-monitor button after 3 s.
-    if args.get(5).map(String::as_str) == Some("remove-monitor") {
+    // `remove-monitor` presses the headset's remove-monitor button after 3 s; `restart-streaming`
+    // sends the key-frame request the headset makes e.g. after recentring.
+    let action = match args.get(5).map(String::as_str) {
+        Some("remove-monitor") => Some(vd_protocol::MessageType::RemoveMonitor),
+        Some("restart-streaming") => Some(vd_protocol::MessageType::RestartStreaming),
+        _ => None,
+    };
+    if let Some(ty) = action {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            println!("pressing remove monitor");
-            let msg = vd_protocol::NetMessage::new(vd_protocol::MessageType::RemoveMonitor);
+            println!("sending {ty:?}");
+            let msg = vd_protocol::NetMessage::new(ty);
             let _ = msg_w.write_all(&msg.encode().unwrap()).await;
             tokio::time::sleep(Duration::from_secs(3600)).await;
             drop(msg_w);
@@ -161,6 +168,7 @@ async fn main() -> std::io::Result<()> {
     // Frames of monitors 1, 2, … (monitor 0 uses full frame headers).
     let mut secondary: std::collections::BTreeMap<i32, u64> = std::collections::BTreeMap::new();
     let mut secondary_bad = 0u64;
+    let mut descriptors = 0u32;
     let mut secondary_unpaired = 0u64;
     let mut primary_times: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let (mut frames, mut keyframes, mut bytes) = (0u64, 0u64, 0u64);
@@ -208,6 +216,7 @@ async fn main() -> std::io::Result<()> {
                 }
             }
             video_tag::DESCRIPTOR => {
+                descriptors += 1;
                 let mut d = [0u8; StreamDescriptor::SIZE];
                 video.read_exact(&mut d).await?;
                 let desc: StreamDescriptor = bytemuck::pod_read_unaligned(&d);
@@ -233,6 +242,7 @@ async fn main() -> std::io::Result<()> {
     }
     out.flush().await?;
     println!("headset sees CanRemoveMonitor = {}", can_remove.load(std::sync::atomic::Ordering::Relaxed));
+    println!("stream descriptors received: {descriptors}");
     for (monitor, n) in &secondary {
         println!("monitor {monitor}: {n} secondary frames");
     }

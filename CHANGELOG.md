@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.1
+
+* Fixed: recentring the headset (holding the Meta button) reset the environment around the virtual screen to the black void.
+  * The headset asks for a fresh key frame after recentring. To produce one, the port restarts its FFmpeg encoders, and each restart re-sent the stream descriptor, which the headset treats as a new stream.
+  * Like the original, the descriptor is now sent only when the stream's parameters change or at the start of a session.
+
 ## 1.2.0
 
 * **Multiple monitors.** Desktop streaming now shows all monitors at once by default, up to the headset's limit (3 on Quest 3) and with a hardware encoder, like the original. Before, only one monitor was shown.

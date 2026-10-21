@@ -7,7 +7,7 @@
 
 #define AppName "Virtual Desktop Streamer (Rust)"
 #ifndef AppVersion
-  #define AppVersion "1.2.0"
+  #define AppVersion "1.2.1"
 #endif
 #define AppExe "desktop_streamer.exe"
 #define AppPublisher "Brandon Graeber"
