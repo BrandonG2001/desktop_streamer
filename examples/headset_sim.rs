@@ -50,7 +50,7 @@ async fn connect(host: &str, port: u16) -> std::io::Result<TcpStream> {
     Err(last.unwrap_or_else(|| std::io::Error::other("connect failed")))
 }
 
-/// Entry point: `headset_sim <host> <output file> <seconds> [length-prefixed|annex-b] [remove-monitor|restart-streaming]`.
+/// Entry point: `headset_sim <host> <output file> <seconds> [length-prefixed|annex-b] [remove-monitor|restart-streaming|bandwidth-drop]`.
 ///
 /// # Errors
 /// I/O errors.
@@ -147,16 +147,17 @@ async fn main() -> std::io::Result<()> {
     });
     // `remove-monitor` presses the headset's remove-monitor button after 3 s; `restart-streaming`
     // sends the key-frame request the headset makes e.g. after recentring.
+    // `bandwidth-drop` reports a lower measured bandwidth (the streamer must lower its bitrate).
     let action = match args.get(5).map(String::as_str) {
-        Some("remove-monitor") => Some(vd_protocol::MessageType::RemoveMonitor),
-        Some("restart-streaming") => Some(vd_protocol::MessageType::RestartStreaming),
+        Some("remove-monitor") => Some(vd_protocol::NetMessage::new(vd_protocol::MessageType::RemoveMonitor)),
+        Some("restart-streaming") => Some(vd_protocol::NetMessage::new(vd_protocol::MessageType::RestartStreaming)),
+        Some("bandwidth-drop") => Some(vd_protocol::settings::property_message::<SharedMobileSettings, _>("MeasuredBandwidth", &5_000_000i32).unwrap()),
         _ => None,
     };
-    if let Some(ty) = action {
+    if let Some(msg) = action {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            println!("sending {ty:?}");
-            let msg = vd_protocol::NetMessage::new(ty);
+            println!("sending {msg}");
             let _ = msg_w.write_all(&msg.encode().unwrap()).await;
             tokio::time::sleep(Duration::from_secs(3600)).await;
             drop(msg_w);
@@ -169,6 +170,8 @@ async fn main() -> std::io::Result<()> {
     let mut secondary: std::collections::BTreeMap<i32, u64> = std::collections::BTreeMap::new();
     let mut secondary_bad = 0u64;
     let mut descriptors = 0u32;
+    // Monitor-0 video bytes per second of the session (shows bitrate changes).
+    let mut per_second: Vec<u64> = Vec::new();
     let mut secondary_unpaired = 0u64;
     let mut primary_times: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let (mut frames, mut keyframes, mut bytes) = (0u64, 0u64, 0u64);
@@ -196,6 +199,11 @@ async fn main() -> std::io::Result<()> {
                 }
                 frames += 1;
                 bytes += payload.len() as u64;
+                let second = (Instant::now() + Duration::from_secs(seconds)).saturating_duration_since(deadline).as_secs() as usize;
+                if per_second.len() <= second {
+                    per_second.resize(second + 1, 0);
+                }
+                per_second[second] += payload.len() as u64;
                 latency_sum += f64::from(header.encode_latency_ms);
                 out.write_all(&payload).await?;
             }
@@ -243,6 +251,7 @@ async fn main() -> std::io::Result<()> {
     out.flush().await?;
     println!("headset sees CanRemoveMonitor = {}", can_remove.load(std::sync::atomic::Ordering::Relaxed));
     println!("stream descriptors received: {descriptors}");
+    println!("monitor 0 kbit/s per second: {:?}", per_second.iter().map(|b| b * 8 / 1000).collect::<Vec<_>>());
     for (monitor, n) in &secondary {
         println!("monitor {monitor}: {n} secondary frames");
     }

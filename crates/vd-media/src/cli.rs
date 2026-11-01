@@ -7,7 +7,8 @@
 //!
 //! Run-time control is limited compared with the original's direct NVENC API use: bitrate
 //! changes and on-demand key frames restart the process (≈100–300 ms), and a finite GOP is used
-//! to bound recovery time.  Build with the `ffmpeg-lib` feature for in-process control.
+//! to bound recovery time.  Builds with the `ffmpeg-lib` feature use the in-process pipeline
+//! (`crate::inproc`) instead where possible, and fall back to this one.
 
 use std::process::Stdio;
 use std::time::Duration;

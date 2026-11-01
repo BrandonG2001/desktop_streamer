@@ -62,8 +62,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
-      - name: Test
-        run: cargo test --workspace --release --locked
+      - name: Test (with the in-process encoder)
+        shell: pwsh
+        run: |
+          . ./packaging/windows/ffmpeg-env.ps1
+          cargo test --workspace --release --locked --features ffmpeg-lib
       - name: Build installer
         shell: pwsh
         run: ./packaging/windows/build-installer.ps1

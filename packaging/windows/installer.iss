@@ -1,8 +1,7 @@
 ; Inno Setup script for the Windows installer of desktop_streamer.
 ;
-; Build (after `cargo build --release`):
-;   ISCC.exe packaging\windows\installer.iss
-; or run packaging\windows\build-installer.ps1, which also builds the program.
+; Build with packaging\windows\build-installer.ps1, which fetches the pinned FFmpeg
+; (third_party\ffmpeg), builds the program with the in-process encoder and runs ISCC.
 ; The installer is written to dist\.
 
 #define AppName "Virtual Desktop Streamer (Rust)"
@@ -51,11 +50,17 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "startup"; Description: "Start with Windows"; GroupDescription: "Startup:"
 Name: "firewall"; Description: "Allow headset connections through Windows Firewall"; GroupDescription: "Network:"
-Name: "ffmpeg"; Description: "Install FFmpeg with winget (required for video streaming)"; GroupDescription: "Dependencies:"; Check: not FfmpegFound
 Name: "ytdlp"; Description: "Install yt-dlp with winget (optional, for ""Paste URL"" video downloads)"; GroupDescription: "Dependencies:"; Flags: unchecked; Check: not YtDlpFound
 
 [Files]
 Source: "..\..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+; FFmpeg (LGPL): libraries of the in-process encoder, plus ffmpeg/ffprobe for video playback
+; and the command-line fallback.
+Source: "..\..\third_party\ffmpeg\bin\*.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\third_party\ffmpeg\bin\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\third_party\ffmpeg\bin\ffprobe.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\third_party\ffmpeg\LICENSE.txt"; DestDir: "{app}\licenses"; DestName: "FFmpeg-LICENSE.txt"; Flags: ignoreversion
+Source: "FFMPEG-NOTICE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; DestName: "README.md"; Flags: ignoreversion
 Source: "..\..\docs\REVERSE_ENGINEERING.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 
@@ -71,7 +76,6 @@ Filename: "{app}\{#AppExe}"; Parameters: "autostart on"; Flags: runhidden runaso
 Filename: "{app}\{#AppExe}"; Parameters: "autostart off"; Flags: runhidden runasoriginaluser waituntilterminated; Tasks: not startup
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#FirewallRule}"""; Flags: runhidden; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#FirewallRule}"" dir=in action=allow program=""{app}\{#AppExe}"" enable=yes profile=any"; Flags: runhidden; Tasks: firewall; StatusMsg: "Adding firewall rule..."
-Filename: "winget.exe"; Parameters: "install --id Gyan.FFmpeg -e --silent --accept-package-agreements --accept-source-agreements"; Flags: runhidden waituntilterminated; Tasks: ffmpeg; StatusMsg: "Installing FFmpeg (this can take a minute)..."
 Filename: "winget.exe"; Parameters: "install --id yt-dlp.yt-dlp -e --silent --accept-package-agreements --accept-source-agreements"; Flags: runhidden waituntilterminated; Tasks: ytdlp; StatusMsg: "Installing yt-dlp..."
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
@@ -85,12 +89,6 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 function OnPath(const Exe: String): Boolean;
 begin
   Result := FileSearch(Exe, GetEnv('PATH')) <> '';
-end;
-
-{ FFmpeg on PATH or in the WinGet links folder of the current user. }
-function FfmpegFound: Boolean;
-begin
-  Result := OnPath('ffmpeg.exe') or FileExists(ExpandConstant('{localappdata}\Microsoft\WinGet\Links\ffmpeg.exe'));
 end;
 
 { yt-dlp on PATH or in the WinGet links folder. }

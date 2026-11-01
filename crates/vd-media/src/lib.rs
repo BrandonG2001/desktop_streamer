@@ -17,9 +17,13 @@
 //!   FFmpeg ≥ 5 and on ARM, and needs no development headers.  **All FFmpeg-version specific
 //!   knowledge lives in [`version`] and [`codec`]**, so upgrading FFmpeg means editing those two
 //!   modules only.
-//! * [`libav`] (feature `ffmpeg-lib`) links libavcodec through `ffmpeg-next`, allowing on-demand
-//!   key frames and live bitrate changes without restarting the encoder.  Pin the `ffmpeg-next`
-//!   major version in `Cargo.toml` to the FFmpeg major version you build against.
+//! * `inproc` (feature `ffmpeg-lib`) runs the same capture graph and encoder inside the
+//!   process through the libav* C API (`ffmpeg-sys-next`), allowing on-demand key frames, live
+//!   bitrate changes and measured latency without restarting anything.  Pin the
+//!   `ffmpeg-sys-next` major version in `Cargo.toml` to the FFmpeg major version you build against.
+//!
+//! [`pipeline::VideoPipeline`] picks the in-process backend when available and falls back to the
+//! command line otherwise.
 
 #![warn(missing_docs)]
 
@@ -28,8 +32,9 @@ pub mod cli;
 pub mod codec;
 pub mod error;
 #[cfg(feature = "ffmpeg-lib")]
-pub mod libav;
+pub mod inproc;
 pub mod obu;
+pub mod pipeline;
 pub mod probe;
 pub mod reader;
 pub mod thumbnail;

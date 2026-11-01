@@ -78,7 +78,11 @@ Settings live in `StreamerSettings.json` in the user config directory (override 
 
 ## Requirements
 
-* **FFmpeg ≥ 5** on `PATH` (or `VD_FFMPEG_DIR`). Use `--features ffmpeg-lib` to link libav directly.
+* **FFmpeg ≥ 5** on `PATH` (or `VD_FFMPEG_DIR`, or next to the executable). The Windows installer and zip bundle an LGPL FFmpeg 9 build.
+* **In-process encoder** (`--features ffmpeg-lib`, used by the Windows release):
+  * It captures and encodes inside the program through the FFmpeg libraries, giving instant key frames, live bitrate changes and measured latency.
+  * It falls back to running the `ffmpeg` program per monitor, which is the default build. Set `VD_ENCODER=cli` to force that mode.
+  * Building it needs the FFmpeg headers and libraries. On Windows, `. .\packaging\windowsfmpeg-env.ps1` fetches the pinned build into `third_partyfmpeg` and sets `FFMPEG_DIR`, `LIBCLANG_PATH` and the bindgen arguments.
 * **Linux:** write access to `/dev/uinput`, plus `pactl`/`parec`/`pacat` and `iw`. The window uses
   OpenGL through X11 or Wayland. The tray icon needs a StatusNotifierItem host (KDE, or GNOME with
   the AppIndicator extension); without one, closing the window quits. Global hotkeys need X11 or

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0
+
+* **In-process video encoder on Windows.** Desktop capture and encoding now run inside the streamer through the FFmpeg libraries, with the same `ddagrab` capture and NVENC/AMF/QSV settings as before, instead of one `ffmpeg.exe` per monitor:
+  * Key-frame requests (recentring, packet loss) no longer restart the encoders. The next frame is a key frame, like the original's ForceKeyFrame.
+  * Bitrate changes are applied to the running encoder (NVENC, QSV) without a hitch, so the stream follows the measured bandwidth again. AMF still restarts.
+  * Encoder latency is measured instead of estimated (about 4 ms on NVENC).
+  * If the in-process encoder cannot start, that monitor falls back to the `ffmpeg` program automatically. Set `VD_ENCODER=cli` to force the program.
+* The Windows installer and zip now include an LGPL FFmpeg 9 build (DLLs, `ffmpeg.exe`, `ffprobe.exe` and licence notice). FFmpeg no longer needs to be installed separately, and the winget FFmpeg option was removed.
+
 ## 1.2.1
 
 * Fixed: recentring the headset (holding the Meta button) reset the environment around the virtual screen to the black void.

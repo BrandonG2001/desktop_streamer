@@ -7,9 +7,11 @@ publish.workspace = true
 
 [features]
 default = []
-# Use libavcodec/libavformat directly through `ffmpeg-next` (pin the major version here when
-# upgrading FFmpeg: ffmpeg-next 7.x <-> FFmpeg 7.x).  The CLI backend is always available.
-ffmpeg-lib = ["dep:ffmpeg-next"]
+# In-process capture + encode through the libav* C API (`inproc.rs`).  Needs FFmpeg headers and
+# libraries at build time (FFMPEG_DIR, see packaging/windows/fetch-ffmpeg.ps1) and the DLLs at run
+# time.  Pin `ffmpeg-sys-next`'s major version to FFmpeg's (9.x <-> FFmpeg 9).  The CLI backend
+# is always available as a fallback.
+ffmpeg-lib = ["dep:ffmpeg-sys-next"]
 
 [dependencies]
 vd-protocol = { path = "../vd-protocol" }
@@ -18,4 +20,4 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-ffmpeg-next = { version = "7.0.4", optional = true }
+ffmpeg-sys-next = { version = "9.0.1", optional = true, default-features = false, features = ["avcodec", "avfilter"] }

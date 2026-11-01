@@ -25,7 +25,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use vd_media::EncodedFrame;
 use vd_media::capture::{CaptureSource, CaptureSpec, Region};
-use vd_media::cli::CliVideoPipeline;
+use vd_media::pipeline::{Controls, VideoPipeline};
 use vd_media::codec::{EncoderConfig, resolve_codec};
 use vd_platform::display::MonitorInfo;
 use vd_protocol::hmd;
@@ -193,6 +193,8 @@ pub fn capture_source(app: &App, media: &MediaEnv, m: &MonitorInfo) -> CaptureSo
 struct Pipeline {
     task: tokio::task::JoinHandle<()>,
     stop: tokio::sync::oneshot::Sender<()>,
+    /// Key-frame / bitrate controls (in-process encoder only).
+    controls: Controls,
 }
 
 /// Output of a pipeline task: a frame, or `None` when its encoder process ended.
@@ -235,14 +237,18 @@ fn start_pipelines(app: &App, media: &MediaEnv, plan: &StreamPlan, tx: &mpsc::Se
             gop: plan.framerate * gop_secs,
             render_node: render_node.clone(),
         };
-        let mut pipeline = match CliVideoPipeline::start(&media.ffmpeg, &capture, &enc) {
-            Ok(p) => p,
+        let mut pipeline = match VideoPipeline::start(&media.ffmpeg, &capture, &enc) {
+            Ok(p) => {
+                info!(monitor = %m.id, backend = p.kind(), "encoder pipeline started");
+                p
+            }
             Err(e) => {
                 warn!(error = %e, monitor = %m.id, "cannot start encoder pipeline");
                 continue;
             }
         };
         let tx = tx.clone();
+        let controls = pipeline.controls();
         let (stop, mut stop_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             loop {
@@ -259,7 +265,7 @@ fn start_pipelines(app: &App, media: &MediaEnv, plan: &StreamPlan, tx: &mpsc::Se
             // Wait for the process to exit so the screen capture is released before a restart.
             pipeline.stop().await;
         });
-        pipelines.push(Pipeline { task, stop });
+        pipelines.push(Pipeline { task, stop, controls });
     }
     pipelines
 }
@@ -396,7 +402,7 @@ async fn send_tick(app: &App, plan: &StreamPlan, tick: Vec<(usize, EncodedFrame)
 /// * `media` - encoder environment.
 /// * `plan` - stream plan.
 /// * `last_descriptor` - descriptor last sent in this session (see [`send_descriptor`]).
-async fn stream(app: &Arc<App>, media: &MediaEnv, plan: StreamPlan, last_descriptor: &mut Option<StreamDescriptor>) {
+async fn stream(app: &Arc<App>, media: &MediaEnv, mut plan: StreamPlan, last_descriptor: &mut Option<StreamDescriptor>) {
     info!(codec = plan.codec.display_name(), fps = plan.framerate, bitrate = plan.bitrate, monitors = plan.monitors.len(), "desktop streaming");
     app.state.streamer.send_modify(|s| {
         s.active_codec = plan.codec;
@@ -457,43 +463,80 @@ async fn stream(app: &Arc<App>, media: &MediaEnv, plan: StreamPlan, last_descrip
             _ = user_rx.changed() => {}
             _ = str_rx.changed() => {}
         }
-        let still_valid = app.state.dynamic.borrow().is_connected
-            && app.state.streaming_source() == StreamingSource::Desktop
-            && plan_matches(app, media, &plan, started);
-        if !still_valid {
+        if !app.state.dynamic.borrow().is_connected || app.state.streaming_source() != StreamingSource::Desktop {
             break;
+        }
+        let change = plan_change(app, media, &plan, &pipelines, started);
+        if change.restart {
+            break;
+        }
+        // In-process encoders take key frames and bitrate changes without a restart (C#:
+        // ForceKeyFrame / nvEncReconfigureEncoder); otherwise restart the pipelines.
+        if let Some(bitrate) = change.bitrate {
+            if !pipelines.iter().all(|p| p.controls.set_bitrate(bitrate)) {
+                break;
+            }
+            info!(from = plan.bitrate, to = bitrate, "encoder bitrate changed");
+            plan.bitrate = bitrate;
+        }
+        if let Some(generation) = change.keyframe {
+            if !pipelines.iter().all(|p| p.controls.force_keyframe()) {
+                break;
+            }
+            debug!("key frame requested");
+            plan.keyframe_generation = generation;
         }
     }
     stop_pipelines(pipelines).await;
 }
 
-/// Minimum time a stream runs before a higher bitrate restarts it.
+/// How the current plan must change.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PlanChange {
+    /// Codec, frame rate, monitors or bitstream format changed: restart.
+    restart: bool,
+    /// New per-monitor bitrate to apply.
+    bitrate: Option<u32>,
+    /// A key frame was requested (new `keyframe_requests` generation).
+    keyframe: Option<u64>,
+}
+
+/// Minimum time a stream runs before a higher bitrate restarts CLI encoders.
 const BITRATE_RAISE_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Reports whether a freshly computed plan equals `plan` (small bitrate changes are ignored to
-/// avoid restarting the CLI encoders for every bandwidth update).
+/// Compares a freshly computed plan with the current one.
+///
+/// Bitrate changes are applied live when every pipeline supports it (any change over 5 %).
+/// CLI pipelines restart for each change (a visible hitch), so for them the bitrate the headset
+/// ramps up while measuring bandwidth only changes for big drops (congestion) or for a big
+/// increase at most every [`BITRATE_RAISE_INTERVAL`].
 ///
 /// # Arguments
 /// * `app` - application context.
 /// * `media` - encoder environment.
 /// * `plan` - current plan.
+/// * `pipelines` - running pipelines (their capabilities).
 /// * `started` - when streaming with `plan` began.
 ///
 /// # Returns
-/// `true` if streaming can continue unchanged.
-fn plan_matches(app: &App, media: &MediaEnv, plan: &StreamPlan, started: std::time::Instant) -> bool {
-    let Some(new) = self::plan(app, media) else { return false };
-    // Each restart re-encodes every monitor from a key frame (a visible hitch), so the bitrate
-    // the headset ramps up while measuring bandwidth only restarts for big drops (congestion)
-    // or for a big increase at most every BITRATE_RAISE_INTERVAL.
+/// What has to change.
+fn plan_change(app: &App, media: &MediaEnv, plan: &StreamPlan, pipelines: &[Pipeline], started: std::time::Instant) -> PlanChange {
+    let Some(new) = self::plan(app, media) else { return PlanChange { restart: true, ..PlanChange::default() } };
+    let restart = new.codec != plan.codec || new.framerate != plan.framerate || new.monitors != plan.monitors || new.use_annex_b != plan.use_annex_b;
+    let live = pipelines.iter().all(|p| !matches!(p.controls, Controls::None));
     let (old, now) = (f64::from(plan.bitrate), f64::from(new.bitrate));
-    let bitrate_close = if now < old { now >= old * 0.75 } else { now <= old * 1.5 || started.elapsed() < BITRATE_RAISE_INTERVAL };
-    new.codec == plan.codec
-        && new.framerate == plan.framerate
-        && new.monitors == plan.monitors
-        && new.use_annex_b == plan.use_annex_b
-        && new.keyframe_generation == plan.keyframe_generation
-        && bitrate_close
+    let bitrate_changed = if live {
+        (now - old).abs() > old * 0.05
+    } else if now < old {
+        now < old * 0.75
+    } else {
+        now > old * 1.5 && started.elapsed() >= BITRATE_RAISE_INTERVAL
+    };
+    PlanChange {
+        restart,
+        bitrate: bitrate_changed.then_some(new.bitrate),
+        keyframe: (new.keyframe_generation != plan.keyframe_generation).then_some(new.keyframe_generation),
+    }
 }
 
 /// Desktop streaming task.

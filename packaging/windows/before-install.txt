@@ -8,8 +8,8 @@ Before you continue:
 * Quit the official Virtual Desktop Streamer if it is running. Both programs use the same network
   ports (TCP 38810-38840) and keyboard shortcuts, so only one of them can run at a time.
 
-* FFmpeg is required for video streaming. If it is not installed, setup can install it for you
-  with winget (Gyan.FFmpeg). A copy placed next to desktop_streamer.exe is also used.
+* FFmpeg is included (LGPL build; see the licenses folder after installation). Video is
+  encoded inside the program on NVIDIA (NVENC), AMD (AMF) or Intel (QSV) graphics.
 
 * PC audio works on its own: in "VR headset only" mode the PC speakers are muted while a headset
   is connected and restored afterwards. Microphone passthrough needs a driver: either the

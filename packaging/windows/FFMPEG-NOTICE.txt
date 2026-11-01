@@ -1,0 +1,17 @@
+FFmpeg
+======
+
+This program uses FFmpeg (https://ffmpeg.org) under the GNU Lesser General Public License,
+version 2.1 or later. See FFmpeg-LICENSE.txt in this folder.
+
+Included files: avcodec-63.dll, avfilter-12.dll, avformat-63.dll, avdevice-63.dll, avutil-61.dll,
+swresample-7.dll, swscale-10.dll, ffmpeg.exe and ffprobe.exe.
+
+Version:  FFmpeg n9.0.2-39-g7adfbe40dc, LGPL "shared" Windows x64 build
+Binaries: https://github.com/BtbN/FFmpeg-Builds (release autobuild-2026-10-31-12-59)
+Source:   https://github.com/FFmpeg/FFmpeg/tree/7adfbe40dc
+          Build scripts and the configuration of the bundled libraries:
+          https://github.com/BtbN/FFmpeg-Builds
+
+desktop_streamer links these libraries dynamically. You may replace the DLLs with another
+build of the same FFmpeg major version (avcodec-63, avfilter-12, avutil-61).

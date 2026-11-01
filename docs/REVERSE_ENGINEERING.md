@@ -197,4 +197,4 @@ the decompiled `MainWindow`, `BindingSettings`, `YouTubeHelper` and converter cl
   * Wayland: `kmsgrab` (needs `cap_sys_admin` on the binary, or root) or `Port.CustomCaptureArgs`.
   * A native PipeWire portal capture is the recommended next addition.
 * **ARM64:** everything is pure Rust except FFmpeg. Use `v4l2m2m` or `vaapi` encoders.
-* **FFmpeg upgrades:** edit only `crates/vd-media/src/version.rs` (version-gated option spellings) and `codec.rs` (encoder options). For the `ffmpeg-lib` feature, also bump `ffmpeg-next` to the matching major version; only `libav.rs` touches the C API.
+* **FFmpeg upgrades:** edit only `crates/vd-media/src/version.rs` (version-gated option spellings) and `codec.rs` (encoder options). For the `ffmpeg-lib` feature (the in-process encoder), also bump `ffmpeg-sys-next` to the matching major version and the pinned build in `packaging/windows/fetch-ffmpeg.ps1`; only `inproc.rs` touches the C API.
