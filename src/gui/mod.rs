@@ -93,7 +93,7 @@ impl Tab {
 }
 
 /// An action awaiting confirmation in a message box.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Confirm {
     /// Uncheck "Automatically adjust bitrate" (`OnAutoAdjustBitratePreviewMouseDown`).
     DisableAutoBitrate,
@@ -101,6 +101,9 @@ enum Confirm {
     EnableBoostPriority,
     /// Edit the accounts while a headset is connected (`OnChangeClick`).
     ChangeAccounts,
+    /// Add the account of a headset that searched the LAN (C#: the pairing prompt of
+    /// `_0095_0002._0002`).
+    AllowAccount(Platform, String),
 }
 
 /// A message box (C#: `MessageBoxWindow`).
@@ -110,6 +113,8 @@ struct Dialog {
     text: String,
     /// `Some` for Yes/No questions, `None` for an OK-only notice.
     confirm: Option<Confirm>,
+    /// State of a "Don't ask again" check box, when the message box has one.
+    dont_ask: Option<bool>,
 }
 
 /// State of the "Add Account" dialog (C#: `AddAccountWindow`).
@@ -161,6 +166,26 @@ impl SystemInfo {
     }
 }
 
+/// Desktop streaming rates measured from [`crate::app::StreamStats`].
+#[derive(Debug, Clone, Copy)]
+struct StreamRates {
+    /// When the counters were read.
+    at: Instant,
+    /// Frame counter at `at`.
+    frames: u64,
+    /// Byte counter at `at`.
+    bytes: u64,
+    /// Frames per second over the last interval.
+    fps: f64,
+    /// Megabits per second over the last interval.
+    mbps: f64,
+    /// Encode time of the last frame, in milliseconds.
+    encode_ms: f64,
+}
+
+/// Interval over which [`StreamRates`] are averaged.
+const RATE_INTERVAL: Duration = Duration::from_secs(1);
+
 /// A video-library folder link (C#: `DynamicSettings.VideoFolders`).
 #[derive(Debug, Clone)]
 struct VideoFolder {
@@ -210,6 +235,10 @@ struct SettingsWindow {
     video_folders: Option<Vec<VideoFolder>>,
     /// Cached microphone choices: Virtual Desktop driver present, and cable playback devices.
     mic_targets: Option<(bool, Vec<(String, String)>)>,
+    /// Register again once this frame's settings are applied (an account was added).
+    reconnect_after_commit: bool,
+    /// Last streaming rates shown in ABOUT.
+    rates: Option<StreamRates>,
 }
 
 impl SettingsWindow {
@@ -262,6 +291,7 @@ impl SettingsWindow {
                     tokio::select! {
                         r = d.changed() => if r.is_err() { return },
                         r = s.changed() => if r.is_err() { return },
+                        () = app.pairing_notify.notified() => {}
                         _ = shutdown.changed() => {}
                     }
                     ctx.request_repaint();
@@ -297,7 +327,34 @@ impl SettingsWindow {
             system,
             video_folders: None,
             mic_targets: None,
+            reconnect_after_commit: false,
+            rates: None,
         }
+    }
+
+    /// Streaming rates for ABOUT, refreshed every [`RATE_INTERVAL`] while the tab is shown.
+    ///
+    /// # Returns
+    /// The rates, or `None` until two readings exist or when no desktop frame was sent in the
+    /// last interval.
+    fn stream_rates(&mut self) -> Option<StreamRates> {
+        use std::sync::atomic::Ordering;
+        let now = Instant::now();
+        let stats = &self.app.stats;
+        let (frames, bytes) = (stats.frames.load(Ordering::Relaxed), stats.bytes.load(Ordering::Relaxed));
+        let encode_ms = f64::from(stats.encode_us.load(Ordering::Relaxed)) / 1000.0;
+        let due = self.rates.is_none_or(|r| now - r.at >= RATE_INTERVAL);
+        if due {
+            let (fps, mbps) = match self.rates {
+                Some(r) => {
+                    let secs = (now - r.at).as_secs_f64();
+                    ((frames - r.frames) as f64 / secs, (bytes - r.bytes) as f64 * 8.0 / secs / 1e6)
+                }
+                None => (0.0, 0.0),
+            };
+            self.rates = Some(StreamRates { at: now, frames, bytes, fps, mbps, encode_ms });
+        }
+        self.rates.filter(|r| r.fps > 0.0)
     }
 
     /// Shows a notice with an OK button.
@@ -305,7 +362,7 @@ impl SettingsWindow {
     /// # Arguments
     /// * `text` - message.
     fn info(&mut self, text: impl Into<String>) {
-        self.dialog = Some(Dialog { text: text.into(), confirm: None });
+        self.dialog = Some(Dialog { text: text.into(), confirm: None, dont_ask: None });
     }
 
     /// Asks a Yes/No question.
@@ -314,7 +371,30 @@ impl SettingsWindow {
     /// * `text` - question.
     /// * `confirm` - action performed on "Yes".
     fn ask(&mut self, text: impl Into<String>, confirm: Confirm) {
-        self.dialog = Some(Dialog { text: text.into(), confirm: Some(confirm) });
+        self.dialog = Some(Dialog { text: text.into(), confirm: Some(confirm), dont_ask: None });
+    }
+
+    /// Opens the prompt for the next queued pairing request, bringing the window up from the
+    /// notification area (C#: the pairing `MessageBox`, owned by the main window).
+    ///
+    /// # Arguments
+    /// * `ctx` - egui context.
+    fn next_pairing_request(&mut self, ctx: &egui::Context) {
+        if self.dialog.is_some() || self.add_account.is_some() {
+            return;
+        }
+        loop {
+            let Some(r) = self.app.pairing_requests.lock().expect("poisoned").pop_front() else { return };
+            // The account may have been added, or asking turned off, since it was queued.
+            let s = self.app.settings.lock().expect("poisoned").clone();
+            if !s.show_pairing_requests || !crate::pairing::can_add_account(&s, r.platform, &r.account_id) {
+                continue;
+            }
+            let text = format!("Allow {} user '{}' to access this computer?", crate::pairing::platform_label(r.platform), r.account_id);
+            self.dialog = Some(Dialog { text, confirm: Some(Confirm::AllowAccount(r.platform, r.account_id)), dont_ask: Some(false) });
+            self.show(ctx);
+            return;
+        }
     }
 
     /// Hides the window in the notification area, or minimises it when there is no tray.
@@ -529,9 +609,14 @@ impl SettingsWindow {
     fn dialog(&mut self, ctx: &egui::Context, settings: &mut StreamerSettings) {
         let Some(dialog) = self.dialog.clone() else { return };
         let mut answer: Option<bool> = None;
+        let mut dont_ask = dialog.dont_ask;
         egui::Modal::new(egui::Id::unique("message_box")).frame(dialog_frame()).show(ctx, |ui| {
             ui.set_width(380.0);
             ui.label(&dialog.text);
+            if let Some(d) = dont_ask.as_mut() {
+                ui.add_space(8.0);
+                ui.checkbox(d, "Don't ask again");
+            }
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                 if dialog.confirm.is_some() {
@@ -546,8 +631,17 @@ impl SettingsWindow {
                 }
             });
         });
-        let Some(yes) = answer else { return };
+        let Some(yes) = answer else {
+            if let Some(d) = self.dialog.as_mut() {
+                d.dont_ask = dont_ask;
+            }
+            return;
+        };
         self.dialog = None;
+        if let Some(d) = dont_ask {
+            // C#: ShowPairingRequests = !checkbox, whatever the answer.
+            settings.show_pairing_requests = !d;
+        }
         if !yes {
             return;
         }
@@ -557,6 +651,14 @@ impl SettingsWindow {
             Some(Confirm::ChangeAccounts) => {
                 self.editing_accounts = true;
                 self.disconnect();
+            }
+            Some(Confirm::AllowAccount(platform, name)) => {
+                if crate::pairing::can_add_account(settings, platform, &name) {
+                    settings.add_account(platform, &name);
+                    self.editing_accounts = false;
+                    // C#: save, then register again unless a headset is connected.
+                    self.reconnect_after_commit = !self.app.state.dynamic.borrow().is_connected;
+                }
             }
             None => {}
         }
@@ -581,6 +683,7 @@ impl SettingsWindow {
                 t.set_status(status);
             }
         }
+        self.next_pairing_request(ctx);
         // A headset `Exit` message stops the streamer; close the window with it.
         if self.app.is_shutting_down() && !self.quitting {
             self.quit(ctx);
@@ -639,6 +742,11 @@ impl eframe::App for SettingsWindow {
 
         if settings != before {
             self.commit(&before, settings);
+        }
+        if std::mem::take(&mut self.reconnect_after_commit) {
+            self.app.save_settings();
+            self.dirty_since = None;
+            self.app.restart_connection();
         }
     }
 

@@ -19,6 +19,7 @@
 //! * bitrate per monitor = `DesktopBitrate / count`.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -240,6 +241,9 @@ fn start_pipelines(app: &App, media: &MediaEnv, plan: &StreamPlan, tx: &mpsc::Se
         let mut pipeline = match VideoPipeline::start(&media.ffmpeg, &capture, &enc) {
             Ok(p) => {
                 info!(monitor = %m.id, backend = p.kind(), "encoder pipeline started");
+                if i == 0 {
+                    *app.stats.encoder.lock().expect("poisoned") = p.kind();
+                }
                 p
             }
             Err(e) => {
@@ -383,8 +387,11 @@ async fn send_descriptor(app: &App, plan: &StreamPlan, last: &mut Option<StreamD
 /// Video channel send errors.
 async fn send_tick(app: &App, plan: &StreamPlan, tick: Vec<(usize, EncodedFrame)>) -> vd_net::error::Result<()> {
     let timestamp = tick.first().map(|(_, f)| f.capture_time).unwrap_or_else(vd_media::now_ticks);
+    app.stats.frames.fetch_add(1, Ordering::Relaxed);
     for (idx, frame) in tick {
+        app.stats.bytes.fetch_add(frame.data.len() as u64, Ordering::Relaxed);
         if idx == 0 {
+            app.stats.encode_us.store((frame.encode_latency_ms * 1000.0) as u32, Ordering::Relaxed);
             let mut header = FrameHeader::desktop(timestamp, app.headset_frame(), StreamingSource::Desktop, HapticFeedback::default(), HapticFeedback::default());
             header.encode_latency_ms = frame.encode_latency_ms;
             app.channels.video.send_frame(header, &frame.data, plan.use_annex_b).await?;

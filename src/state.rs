@@ -40,8 +40,6 @@ pub struct DynamicState {
     pub keyframe_requests: u64,
     /// Latest headset frame index (echoed in frame headers).
     pub last_headset_frame: i32,
-    /// Measured motion-to-photon latency reported in the UI (`Latency`).
-    pub latency_ms: i32,
     /// GPU / encoder description (`AdapterName`).
     pub adapter_name: String,
     /// A hardware encoder is available (`HasHardwareEncoder`).

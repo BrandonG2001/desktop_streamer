@@ -63,8 +63,12 @@ pub async fn run(app: Arc<App>, mut states: mpsc::Receiver<HeadsetState>) {
                 let now = Instant::now();
                 let elapsed = now - last_tick;
                 last_tick = now;
-                if let (Some(b), Some(ev)) = (backend.as_mut(), translator.tick(elapsed)) {
-                    if let Err(e) = b.emit(&[ev]) {
+                if let Some(b) = backend.as_mut() {
+                    let r = match translator.tick(elapsed) {
+                        Some(ev) => b.emit(&[ev]),
+                        None => b.tick(),
+                    };
+                    if let Err(e) = r {
                         warn!(error = %e, "input injection failed");
                     }
                 }
@@ -72,12 +76,16 @@ pub async fn run(app: Arc<App>, mut states: mpsc::Receiver<HeadsetState>) {
             s = states.recv() => {
                 let Some(state) = s else { return };
                 app.headset_frame.store(state.frame_index, Ordering::Relaxed);
+                // C#: DynamicSettings.Latency = (int)(HeadsetState float * 1000f).
+                app.stats.latency_ms.store((state.value_a * 1000.0) as i32, Ordering::Relaxed);
                 let desktop = app.state.streaming_source() == StreamingSource::Desktop;
                 let gamepad = app.state.user.borrow().emulate_gamepad;
                 if !desktop && !gamepad && backend.is_none() {
                     continue;
                 }
                 let b = backend.get_or_insert_with(|| open(&app));
+                // C#: IInputInjection.UseTouchInput(StreamerSettings.UseTouchInput).
+                translator.set_touch(app.settings.lock().expect("poisoned").use_touch_input && b.supports_touch());
                 // Pointer coordinates are already physical virtual-desktop pixels.
                 let mut events = translator.translate(&state.input, desktop, gamepad);
                 if RELEASE_GAMEPAD.swap(false, Ordering::Relaxed) {

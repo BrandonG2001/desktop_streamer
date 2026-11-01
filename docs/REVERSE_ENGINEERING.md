@@ -146,7 +146,13 @@ From `VirtualDesktop.Server.exe` `_0008._0002`. Its injection loop runs every 1 
 * **Laser pointers** (`_0003_0002._0003`, two of them):
   * `b0 || b1`: the pointer is in range, and a touch contact follows `(x, y)`. The coordinates are physical virtual-desktop pixels, divided only by the DPI-virtualisation factor; no monitor origin is added.
   * `b2 || b3 || b4`: the contact is down. `b3` makes it a secondary press and `b4` a tertiary one; otherwise it is primary.
-  * The port emulates the touch contacts with the mouse (left/right/middle), and the pointer in contact owns the cursor.
+  * With `UseTouchInput` (and `InitializeTouchInjection(2, TOUCH_FEEDBACK_DEFAULT)` succeeding), a primary contact is a real touch contact, `PT_TOUCH` with id 0 or 1 and an 8×8 `rcContact`. Secondary and tertiary presses stay mouse right/middle buttons. The pointer flags are `_0002._0007`: INRANGE 2, INCONTACT 4, DOWN 0x10000, UPDATE 0x20000, UP 0x40000. The frame sequences are:
+    * press: `INRANGE|UPDATE`, then `INRANGE|INCONTACT|DOWN`, then `INRANGE|INCONTACT|UPDATE`;
+    * hold or move: `INRANGE|INCONTACT|UPDATE`, injected every millisecond (the port re-injects every 50 ms);
+    * release: `INRANGE|UP`, then `INRANGE|UPDATE`, then `UPDATE`.
+  * Every frame carries both active contacts. The cursor follows the owning pointer with `MOUSEEVENTF_MOVE|ABSOLUTE`, except while that pointer is a touch contact.
+  * Without touch, the contacts are emulated with the mouse (left/right/middle). The port does the same on Linux.
+  * Not ported: while a pointer is in range, the original also widens the double-click and drag rectangles to 32 px and the double-click time to 1200 ms (`SystemParametersInfo` 29/30/32/76/77). It resets them to 4 px and 500 ms afterwards, not to the user's values.
 * **Mouse mode** (`_0003_0002._0002`, bools `b1`–`b6`, floats `x`/`y`, sbytes `w1`/`w2`):
   * `b1` turns mouse mode on. Presses, motion and the wheel are ignored without it, but releases are still delivered.
   * `b2`–`b6` are LEFT, MIDDLE, RIGHT, XBUTTON1 and XBUTTON2, edge-triggered.
@@ -178,8 +184,25 @@ the decompiled `MainWindow`, `BindingSettings`, `YouTubeHelper` and converter cl
 * **Paste URL:** runs `yt-dlp -f bestvideo+bestaudio[ext=m4a]/mp4 -o <videos>\%(title)s.%(ext)s
   --compat-opt prefer-vp9-sort --restrict-filenames --no-check-certificate`. It parses
   `[download] N% of` lines into `SharedStreamerSettings.DownloadState` and `DownloadProgress`.
+* **ABOUT latency:** `DynamicSettings.Latency = (int)(HeadsetState._0001 * 1000f)`, the first float of every headset state (observed in IL). The port also shows frame rate, bitrate and encode time.
 * **Not reproduced:** the update checker, "Check for interfering apps" (`AppsCheckerWindow`), the
-  hosts-file piracy warning, localisation (`CultureResources`) and new-headset pairing prompts.
+  hosts-file piracy warning and localisation (`CultureResources`).
+
+## 6c. LAN discovery and pairing prompts (`_0084_0002._0002`)
+
+Observed in 1.34.25, the version installed when this was ported. The service runs from the start of registration until a headset connects.
+
+* **Socket:** UDP `[::]:38850` in dual mode, joined to `ff02::1` on every interface. Headsets send to `255.255.255.255:38850` or `ff02::1`.
+* **Encryption:** the AES record layer of §3, with a key and IV built into the streamer (`vd-net::pairing`).
+* **Request** (more than 243 bytes). The plaintext is:
+  1. 243 bytes of the headset's 1024-bit RSA public key as `<RSAKeyValue>` XML;
+  2. then either:
+     * `0x00`, platform, account (UTF-8). This is unsigned and accepted for `OculusQuest` only; or
+     * `0x01`, a 256-byte signature, 2 bytes, platform, account. The signature covers `platform ‖ account` and is checked with `RSA.VerifyData` against Virtual Desktop's 2048-bit key. The hash and padding are bound at run time by the obfuscator, so the port accepts SHA-256, SHA-1 and SHA-512 with PKCS#1 v1.5, and SHA-256 with PSS.
+* **Known account:** the reply is `RSA-OAEP(headset key, AES key ‖ IV)` (128 bytes), followed by the `DataContractSerializer` XML of `Computer`, encrypted under that AES key. `Computer` holds `ID`, `Name`, `Description`, `OS`, `StreamerVersion`, `PrivateAdapters`, the remote and encryption flags, a random `ConnectionID` and the session `Key`/`IV`. Unsigned requesters are remembered: OculusStreamer later disconnects them unless the HMD type allows it.
+* **Connect request** (17 bytes): `ConnectionID ‖ platform`. The streamer then opens a LAN session to the sender with the session key, without the relay.
+* **Unknown account:** the first request per headset key raises the prompt "Allow {Meta|platform} user '{account}' to access this computer?" when `ShowPairingRequests` is on. Its "don't ask again" box sets `ShowPairingRequests = false`. On Yes, the account is added if `CanAddAccountID` allows it (not listed, fewer than 5 per platform), the settings are saved, and registration restarts unless a headset is connected.
+* **Port:** only the unknown-account path (the prompt) is implemented. Headsets with a known account still find the PC through the registry, so the PC does not reply to LAN discovery.
 
 ## 7. Known uncertainties
 
@@ -187,6 +210,7 @@ the decompiled `MainWindow`, `BindingSettings`, `YouTubeHelper` and converter cl
 * **Keyboard struct size:** the explicit-layout `_0083_0002._0004` declares `Size = 24`, but its overlapping 4-byte slots make the marshalled size 26 (assumed). If the headset sends 4932 bytes instead of 4936, every offset after the keyboard block shifts by 2 to 4 bytes. The data channel logs a warning in that case.
 * **SOAP:** namespaces and element order are inferred.
 * **Encoder latency:** the CLI backend reports one frame interval, not a measured value.
+* **Discovery signature:** the hash and padding of the request signature are inferred (see §6c).
 
 ## 8. Porting notes
 

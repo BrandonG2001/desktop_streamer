@@ -241,6 +241,8 @@ async fn rendezvous_session(app: &Arc<App>, peers: &mut mpsc::UnboundedReceiver<
     // A PeerInfo left over from a previous relay leg refers to a port we no longer use.
     while peers.try_recv().is_ok() {}
     app.state.dynamic.send_modify(|d| d.status = ConnectionStatus::Connecting);
+    // C#: the LAN discovery service runs from registration until a headset connects.
+    let discovery = crate::pairing::Discovery::start(app);
     let params = register(app).await?;
     let relay_ep = relay::relay_endpoint(params.region, Channel::Messaging, params.rotation);
     info!(%relay_ep, region = ?params.region, "connecting to relay");
@@ -273,6 +275,7 @@ async fn rendezvous_session(app: &Arc<App>, peers: &mut mpsc::UnboundedReceiver<
             }
         }
     };
+    drop(discovery);
     let allow_remote = app.settings.lock().expect("poisoned").allow_remote_connections;
     let encrypt = peer.encrypt();
     let punch = allow_remote.then_some(peer.endpoint);

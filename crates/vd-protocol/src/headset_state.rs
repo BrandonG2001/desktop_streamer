@@ -378,7 +378,8 @@ pub struct FaceState {
 pub struct HeadsetState {
     /// Monotonic headset frame index, echoed in [`crate::wire::FrameHeader::ack_frame_index`].
     pub frame_index: i32,
-    /// Float `_0001` (timing value, inferred: display time / latency).
+    /// Float `_0001`: the latency the streamer shows in ABOUT, in seconds (observed: IL of
+    /// `StreamerManager` sets `DynamicSettings.Latency = (int)(value_a * 1000f)`).
     pub value_a: f32,
     /// Float `_0002` (timing value, inferred).
     pub value_b: f32,

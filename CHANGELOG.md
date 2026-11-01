@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.0
+
+* **Touch input on Windows.** With "Use touch input" on (the default), a laser click is a real Windows touch contact, as in the original. Clicking with both controllers makes two-finger gestures such as pinch-zoom. Right and middle clicks stay mouse clicks. Before, the option did nothing and every click was a mouse click.
+* **"Ask for computer access" works.** When a headset signed in with an account that is not in ACCOUNTS searches the local network, the settings window comes up and asks "Allow Meta user '…' to access this computer?". Yes adds the account and registers again. "Don't ask again" turns the option off.
+* **Live figures in ABOUT:** frame rate, bitrate, encode time and the encoder in use. Latency now shows the value the headset reports. It always showed "--" before.
+* Quieter log: FFmpeg's console output is logged only when an encoder exits on its own, not when it is stopped for a restart. A misleading "audio streaming unavailable" warning was removed.
+* Fixed two garbled paths in the README's build instructions.
+
 ## 1.3.0
 
 * **In-process video encoder on Windows.** Desktop capture and encoding now run inside the streamer through the FFmpeg libraries, with the same `ddagrab` capture and NVENC/AMF/QSV settings as before, instead of one `ffmpeg.exe` per monitor:

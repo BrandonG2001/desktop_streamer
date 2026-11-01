@@ -84,7 +84,8 @@ pub async fn run(app: Arc<App>, mut mic_rx: mpsc::Receiver<Vec<u8>>) {
         let mut session = match AudioSession::start(opts.clone()).await {
             Ok(s) => s,
             Err(e) => {
-                warn!(error = %e, "audio streaming unavailable");
+                // Each component already logged why it could not start.
+                debug!(error = %e, "audio streaming not started");
                 if opts.microphone {
                     app.state.dynamic.send_modify(|d| d.microphone = Some(String::new()));
                 }

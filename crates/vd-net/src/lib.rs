@@ -11,6 +11,7 @@
 //! | [`registry`]  | `IComputerRegistry` WCF client (`BasicHttpBinding`)   | computer registration with vrdesktop.net     |
 //! | [`relay`]     | `_001C._0001`                                         | region and relay-server selection            |
 //! | [`discovery`] | `ConnectionManager._0007`, `WOLHelper`                | LAN wake broadcast and Wake-on-LAN           |
+//! | [`pairing`]   | `_0084_0002._0002`                                    | LAN discovery requests (pairing prompts)     |
 //! | [`routing`]   | `TraceRoute`                                          | NAT classification                           |
 //! | [`upnp`]      | `UPnPManager` (Open.NAT)                              | router port forwarding                       |
 //! | [`adapters`]  | `_0019._0002`                                         | network adapter enumeration                  |
@@ -23,6 +24,7 @@ pub mod discovery;
 pub mod error;
 pub mod link;
 pub mod messaging;
+pub mod pairing;
 pub mod peer;
 pub mod registry;
 pub mod relay;

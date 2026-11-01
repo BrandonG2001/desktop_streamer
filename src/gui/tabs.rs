@@ -12,10 +12,8 @@ use vd_protocol::types::{AudioStreaming, GamepadEmulation, NetworkConnectionType
 
 use super::{AddAccount, Confirm, SettingsWindow, VideoFolder, dialog_frame, theme};
 use crate::bindings::{BindingAction, KEYS, key_label, modifiers};
+use crate::pairing::MAX_ACCOUNTS_PER_PLATFORM;
 use crate::settings::StreamerSettings;
-
-/// Most accounts per platform (C#: `PlatformAccountCollection.LimitReached`).
-const MAX_ACCOUNTS_PER_PLATFORM: usize = 5;
 
 /// Platforms offered by "Add account" (C#: `PlatformProvider`).
 const ADDABLE_PLATFORMS: [Platform; 5] = [Platform::OculusQuest, Platform::Pico, Platform::Google, Platform::PlayForDream, Platform::Vive];
@@ -632,10 +630,24 @@ impl SettingsWindow {
         };
         let adapter = sys.gpu.clone().unwrap_or_else(|| if d.adapter_name.is_empty() { dash() } else { d.adapter_name.clone() });
         // C#: LatencyConverter.
-        let latency = if d.is_connected && d.latency_ms > 0 {
-            format!("{} ms ({})", d.latency_ms, if source == StreamingSource::VR { "VR" } else { "Desktop" })
+        let latency_ms = self.app.stats.latency_ms.load(std::sync::atomic::Ordering::Relaxed);
+        let latency = if d.is_connected && latency_ms > 0 {
+            format!("{latency_ms} ms ({})", if source == StreamingSource::VR { "VR" } else { "Desktop" })
         } else {
             dash()
+        };
+        let live = self.stream_rates();
+        if d.is_connected {
+            // Keep the figures moving while the tab is open.
+            ui.ctx().request_repaint_after(super::RATE_INTERVAL);
+        }
+        let (frame_rate, bitrate, encode) = match live {
+            Some(r) if d.is_connected => (
+                format!("{:.0} fps", r.fps),
+                format!("{:.1} Mbit/s", r.mbps),
+                format!("{:.1} ms ({})", r.encode_ms, *self.app.stats.encoder.lock().expect("poisoned")),
+            ),
+            _ => (dash(), dash(), dash()),
         };
         // C#: PCEthernetConverter / RoutingStatusConverter / BooleanToEnabledConverter.
         let ethernet = match d.connection_type {
@@ -654,6 +666,9 @@ impl SettingsWindow {
             ("Headset:", s.device_name.clone().unwrap_or_else(dash), None),
             ("Codec:", s.codec_name.clone().unwrap_or_else(dash), None),
             ("Latency:", latency, None),
+            ("Frame Rate:", frame_rate, Some("Desktop frames sent to the headset per second")),
+            ("Bitrate:", bitrate, Some("Video sent to the headset, all monitors")),
+            ("Encode Time:", encode, Some("Time from screen capture to encoded frame, for the main monitor.\nThe ffmpeg program reports one frame interval instead of a measurement.")),
             ("Processor:", sys.processor.clone(), None),
             ("Hardware Encoder:", yes_no(d.has_hardware_encoder), Some("A hardware video encoder is required for multi-monitor or VR game streaming")),
             ("Memory:", sys.memory.clone(), None),

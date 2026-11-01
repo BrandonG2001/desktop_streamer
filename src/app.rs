@@ -1,7 +1,8 @@
 //! Application context shared by every task.  Replaces the static classes `ConnectionManager`,
 //! `StreamerManager` and the `SettingsBase<T>.Default` singletons of the original.
 
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::collections::{HashSet, VecDeque};
+use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tokio::sync::{Notify, mpsc, watch};
@@ -10,6 +11,7 @@ use vd_media::codec::{Backend, EncoderCaps, detect_backend, probe_caps};
 use vd_media::version::Ffmpeg;
 use vd_net::channels::{AudioChannel, DataChannel, VideoChannel};
 use vd_net::messaging::MessagingClient;
+use vd_net::pairing::DiscoveryRequest;
 use vd_protocol::NetMessage;
 use vd_protocol::headset_state::HeadsetState;
 use vd_protocol::messages::PeerInfo;
@@ -74,6 +76,23 @@ pub enum VideoCommand {
     Stop,
 }
 
+/// Live streaming figures for the ABOUT tab.  Updated for every frame or headset packet, so they
+/// are atomics rather than watch channels (which would wake every task at that rate).
+#[derive(Debug, Default)]
+pub struct StreamStats {
+    /// Desktop frames sent (one per tick, whatever the number of monitors).
+    pub frames: AtomicU64,
+    /// Video bytes sent, all monitors.
+    pub bytes: AtomicU64,
+    /// Encode time of the last frame of the main monitor, in microseconds.
+    pub encode_us: AtomicU32,
+    /// Latency reported by the headset in its state packets, in milliseconds (C#: `Latency`,
+    /// the first float of `HeadsetState` × 1000).
+    pub latency_ms: AtomicI32,
+    /// Encoder of the running stream: "in-process" or "ffmpeg cli" (empty when not streaming).
+    pub encoder: Mutex<&'static str>,
+}
+
 /// Shared application context.
 pub struct App {
     /// Persisted settings.
@@ -97,6 +116,15 @@ pub struct App {
     pub direct_mode: bool,
     /// Wakes the connection manager to re-register (accounts or connection options changed).
     pub reconnect: Notify,
+    /// Headsets with an unknown account that searched the LAN, awaiting the "Allow ... to access
+    /// this computer?" prompt of the settings window.
+    pub pairing_requests: Mutex<VecDeque<DiscoveryRequest>>,
+    /// Wakes the settings window when a pairing request is queued.
+    pub pairing_notify: Notify,
+    /// RSA keys of the headsets already handled (one prompt per headset and run).
+    pub paired_headsets: Mutex<HashSet<String>>,
+    /// Live streaming figures.
+    pub stats: StreamStats,
 }
 
 /// Receivers created together with the [`App`].
@@ -139,6 +167,10 @@ impl App {
             shutdown: watch::channel(false).0,
             direct_mode,
             reconnect: Notify::new(),
+            pairing_requests: Mutex::default(),
+            pairing_notify: Notify::new(),
+            paired_headsets: Mutex::default(),
+            stats: StreamStats::default(),
         });
         (app, AppReceivers { inbound: Inbound { messages, states, gaze, mic }, peers, video: video_rx })
     }

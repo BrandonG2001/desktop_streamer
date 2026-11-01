@@ -18,8 +18,8 @@ See [docs/REVERSE_ENGINEERING.md](docs/REVERSE_ENGINEERING.md) for the protocol,
 Download the packages from the [latest release](https://github.com/BrandonG2001/desktop_streamer/releases/latest).
 
 * **Windows 10/11 (x64):** run `VirtualDesktopStreamerRust-<version>-setup-x64.exe`. It installs to
-  Program Files and adds a Start-menu entry. It can also add a firewall rule, start with Windows,
-  and install FFmpeg (and optionally yt-dlp) with winget. A portable `.zip` is also available.
+  Program Files and adds a Start-menu entry. FFmpeg is included. Setup can also add a firewall
+  rule, start with Windows, and install yt-dlp with winget. A portable `.zip` is also available.
 * **Linux (x86-64):** extract `desktop_streamer-<version>-linux-x86_64.tar.gz` and run
   `./install.sh --uinput`. This installs to `~/.local` with a menu entry, and grants `/dev/uinput`
   access for input injection.
@@ -38,6 +38,15 @@ drivers:
   * "Auto-select microphone" makes "CABLE Output" the default microphone while you are connected.
 
 OPTIONS → Microphone selects the target ("Automatic" picks the driver, then a known cable).
+
+On Windows the laser pointers act as touch ("Use touch input", on by default). A click with each
+controller makes a two-finger gesture, such as pinch-zoom or a two-finger scroll. Right and middle
+clicks stay mouse clicks. Linux uses the mouse.
+
+"Ask for computer access" works as in the original. When a headset signed in with an account that
+is not in ACCOUNTS searches the local network, the window asks "Allow Meta user '…' to access this
+computer?" and adds the account on Yes. ABOUT shows the live frame rate, bitrate, encode time and
+the latency the headset reports.
 
 Quit the official streamer before starting this one, because they share ports and hotkeys.
 
@@ -82,7 +91,7 @@ Settings live in `StreamerSettings.json` in the user config directory (override 
 * **In-process encoder** (`--features ffmpeg-lib`, used by the Windows release):
   * It captures and encodes inside the program through the FFmpeg libraries, giving instant key frames, live bitrate changes and measured latency.
   * It falls back to running the `ffmpeg` program per monitor, which is the default build. Set `VD_ENCODER=cli` to force that mode.
-  * Building it needs the FFmpeg headers and libraries. On Windows, `. .\packaging\windowsfmpeg-env.ps1` fetches the pinned build into `third_partyfmpeg` and sets `FFMPEG_DIR`, `LIBCLANG_PATH` and the bindgen arguments.
+  * Building it needs the FFmpeg headers and libraries. On Windows, `. .\packaging\windows\ffmpeg-env.ps1` fetches the pinned build into `third_party\ffmpeg` and sets `FFMPEG_DIR`, `LIBCLANG_PATH` and the bindgen arguments.
 * **Linux:** write access to `/dev/uinput`, plus `pactl`/`parec`/`pacat` and `iw`. The window uses
   OpenGL through X11 or Wayland. The tray icon needs a StatusNotifierItem host (KDE, or GNOME with
   the AppIndicator extension); without one, closing the window quits. Global hotkeys need X11 or

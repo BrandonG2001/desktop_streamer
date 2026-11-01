@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use vd_protocol::headset_state::{GamepadState, InputState};
+use vd_protocol::headset_state::{GamepadState, InputState, PointerState};
 
 use crate::error::Result;
 
@@ -76,8 +76,40 @@ pub enum InputEvent {
         /// Horizontal (positive = right).
         horizontal: i32,
     },
+    /// A touch contact starts at a position in virtual-desktop pixels.
+    TouchDown {
+        /// Contact id (the pointer index, 0 or 1).
+        id: u32,
+        /// X.
+        x: i32,
+        /// Y.
+        y: i32,
+    },
+    /// A touch contact moves.
+    TouchMove {
+        /// Contact id.
+        id: u32,
+        /// X.
+        x: i32,
+        /// Y.
+        y: i32,
+    },
+    /// A touch contact lifts.
+    TouchUp {
+        /// Contact id.
+        id: u32,
+    },
     /// New gamepad state.
     Gamepad(GamepadState),
+}
+
+/// What a laser pointer's contact is injected as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Contact {
+    /// A mouse button press.
+    Button(MouseButton),
+    /// A touch contact.
+    Touch,
 }
 
 /// Longest gap, in milliseconds, that [`InputTranslator::tick`] turns into motion at once (avoids
@@ -89,9 +121,10 @@ const MAX_TICK_MS: f64 = 50.0;
 ///
 /// * **Keyboard** — every slot holding a scan code is a held key.
 /// * **Laser pointers** — while a pointer is in range the cursor follows it (absolute); its
-///   contact presses left, right (`buttons[3]`) or middle (`buttons[4]`).  The original injects
-///   real touch contacts; this port emulates them with the mouse, so when both controllers point
-///   at the screen the one in contact owns the cursor.
+///   contact presses left, right (`buttons[3]`) or middle (`buttons[4]`).  With touch input
+///   ([`InputTranslator::set_touch`], C#: `IInputInjection.UseTouchInput`) a primary contact is
+///   a touch contact instead, so two pointers make two-finger gestures; right and middle presses
+///   stay mouse buttons, as in the original.  The pointer in contact owns the cursor.
 /// * **Mouse mode** — only while [`MouseState::active`](vd_protocol::headset_state::MouseState::active):
 ///   buttons left/middle/right/X1/X2, motion as a velocity applied by [`InputTranslator::tick`]
 ///   (or an absolute position when `controllers.absolute_mouse` is set), and the wheel.  While a
@@ -103,8 +136,10 @@ pub struct InputTranslator {
     prev: Option<InputState>,
     /// Mouse buttons held by mouse mode.
     mouse_held: Vec<MouseButton>,
-    /// Button held by each pointer's contact.
-    contact: [Option<MouseButton>; 2],
+    /// What each pointer's contact holds.
+    contact: [Option<Contact>; 2],
+    /// Primary contacts become touch contacts.
+    touch: bool,
     /// Milliseconds of mouse-mode motion not yet emitted.
     pending_ms: f64,
 }
@@ -116,6 +151,15 @@ impl InputTranslator {
     /// The translator.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Chooses how primary laser contacts are injected (takes effect from the next contact).
+    ///
+    /// # Arguments
+    /// * `enabled` - inject touch contacts (`StreamerSettings.UseTouchInput` and a backend that
+    ///   supports touch); otherwise left mouse presses.
+    pub fn set_touch(&mut self, enabled: bool) {
+        self.touch = enabled;
     }
 
     /// Diffs `state` against the previous state.
@@ -197,13 +241,31 @@ impl InputTranslator {
         // Contacts that end are released first, so a press by the other pointer lands cleanly.
         for (i, cur) in state.pointers.iter().enumerate() {
             if !(cur.in_range() && cur.contact()) {
-                if let Some(button) = self.contact[i].take() {
-                    ev.push(InputEvent::Button { button, down: false });
+                match self.contact[i].take() {
+                    Some(Contact::Button(button)) => ev.push(InputEvent::Button { button, down: false }),
+                    Some(Contact::Touch) => ev.push(InputEvent::TouchUp { id: i as u32 }),
+                    None => {}
                 }
             }
         }
-        // With a single cursor only one pointer can drive it: a pointer in contact wins.
+        // Touch contacts start and move independently, so both pointers can touch at once.
+        for (i, (cur, old)) in state.pointers.iter().zip(prev.pointers.iter()).enumerate() {
+            let (x, y) = (i32::from(cur.x), i32::from(cur.y));
+            match self.contact[i] {
+                Some(Contact::Touch) if (cur.x, cur.y) != (old.x, old.y) => ev.push(InputEvent::TouchMove { id: i as u32, x, y }),
+                None if self.touch && cur.in_range() && cur.contact() && Self::press_button(cur) == MouseButton::Left => {
+                    self.contact[i] = Some(Contact::Touch);
+                    ev.push(InputEvent::TouchDown { id: i as u32, x, y });
+                }
+                _ => {}
+            }
+        }
+        // With a single cursor only one pointer can drive it: a pointer in contact wins.  A touch
+        // contact moves the cursor by itself (C#: no mouse move while the owner is touching).
         let owner = (0..2).find(|&i| self.contact[i].is_some()).or_else(|| (0..2).find(|&i| state.pointers[i].in_range() && state.pointers[i].contact()));
+        if owner.is_some_and(|o| self.contact[o] == Some(Contact::Touch)) {
+            return;
+        }
         for (i, (cur, old)) in state.pointers.iter().zip(prev.pointers.iter()).enumerate() {
             if !cur.in_range() || owner.is_some_and(|o| o != i) {
                 continue;
@@ -212,16 +274,27 @@ impl InputTranslator {
                 ev.push(InputEvent::PointerAbs { x: i32::from(cur.x), y: i32::from(cur.y) });
             }
             if cur.contact() && self.contact[i].is_none() {
-                let button = if cur.buttons[3] != 0 {
-                    MouseButton::Right
-                } else if cur.buttons[4] != 0 {
-                    MouseButton::Middle
-                } else {
-                    MouseButton::Left
-                };
-                self.contact[i] = Some(button);
+                let button = Self::press_button(cur);
+                self.contact[i] = Some(Contact::Button(button));
                 ev.push(InputEvent::Button { button, down: true });
             }
+        }
+    }
+
+    /// Mouse button of a pointer contact: right (`buttons[3]`), middle (`buttons[4]`) or left.
+    ///
+    /// # Arguments
+    /// * `p` - pointer in contact.
+    ///
+    /// # Returns
+    /// The button.
+    fn press_button(p: &PointerState) -> MouseButton {
+        if p.buttons[3] != 0 {
+            MouseButton::Right
+        } else if p.buttons[4] != 0 {
+            MouseButton::Middle
+        } else {
+            MouseButton::Left
         }
     }
 
@@ -259,8 +332,15 @@ impl InputTranslator {
     pub fn release_all(&mut self) -> Vec<InputEvent> {
         let Some(prev) = self.prev.take() else { return Vec::new() };
         let mut ev: Vec<InputEvent> = prev.keyboard.pressed().map(|s| InputEvent::Key { scan: s.scan_code, down: false }).collect();
-        for button in self.mouse_held.drain(..).chain(self.contact.iter_mut().filter_map(Option::take)) {
+        for button in self.mouse_held.drain(..) {
             ev.push(InputEvent::Button { button, down: false });
+        }
+        for (i, c) in self.contact.iter_mut().enumerate() {
+            match c.take() {
+                Some(Contact::Button(button)) => ev.push(InputEvent::Button { button, down: false }),
+                Some(Contact::Touch) => ev.push(InputEvent::TouchUp { id: i as u32 }),
+                None => {}
+            }
         }
         ev.push(InputEvent::Gamepad(GamepadState::default()));
         self.pending_ms = 0.0;
@@ -278,6 +358,23 @@ pub trait InputBackend: Send {
     /// # Errors
     /// OS errors from the injection API.
     fn emit(&mut self, events: &[InputEvent]) -> Result<()>;
+
+    /// Whether [`InputEvent::TouchDown`] and friends are injected as real touch contacts.
+    ///
+    /// # Returns
+    /// `false` by default (the translator then uses the mouse).
+    fn supports_touch(&self) -> bool {
+        false
+    }
+
+    /// Periodic work between headset packets, such as refreshing held touch contacts before
+    /// the system cancels them.
+    ///
+    /// # Errors
+    /// OS errors from the injection API.
+    fn tick(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Backend that discards events (used when injection is unavailable).
@@ -423,6 +520,36 @@ mod tests {
         assert_eq!(
             t.translate(&s, true, false),
             vec![InputEvent::PointerAbs { x: 10, y: 0 }, InputEvent::Button { button: MouseButton::Left, down: true }]
+        );
+    }
+
+    #[test]
+    fn touch_contacts_for_primary_presses() {
+        let mut t = InputTranslator::new();
+        t.set_touch(true);
+        let mut s = InputState::default();
+        s.pointers[0].buttons = [1, 0, 1, 0, 0];
+        s.pointers[0].x = 10;
+        s.pointers[1].buttons = [1, 0, 1, 0, 0];
+        s.pointers[1].x = 500;
+        assert_eq!(t.translate(&s, true, false), vec![InputEvent::TouchDown { id: 0, x: 10, y: 0 }, InputEvent::TouchDown { id: 1, x: 500, y: 0 }], "two fingers, no cursor move");
+        s.pointers[1].x = 520;
+        assert_eq!(t.translate(&s, true, false), vec![InputEvent::TouchMove { id: 1, x: 520, y: 0 }]);
+        s.pointers[0].buttons = [1, 0, 0, 0, 0];
+        assert_eq!(t.translate(&s, true, false), vec![InputEvent::TouchUp { id: 0 }]);
+        assert_eq!(t.release_all()[..1], [InputEvent::TouchUp { id: 1 }]);
+    }
+
+    #[test]
+    fn touch_keeps_right_click_on_the_mouse() {
+        let mut t = InputTranslator::new();
+        t.set_touch(true);
+        let mut s = InputState::default();
+        s.pointers[0].buttons = [1, 0, 1, 1, 0];
+        s.pointers[0].x = 10;
+        assert_eq!(
+            t.translate(&s, true, false),
+            vec![InputEvent::PointerAbs { x: 10, y: 0 }, InputEvent::Button { button: MouseButton::Right, down: true }]
         );
     }
 

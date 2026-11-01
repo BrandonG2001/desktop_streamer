@@ -9,8 +9,15 @@
 //! changes and on-demand key frames restart the process (≈100–300 ms), and a finite GOP is used
 //! to bound recovery time.  Builds with the `ffmpeg-lib` feature use the in-process pipeline
 //! (`crate::inproc`) instead where possible, and fall back to this one.
+//!
+//! FFmpeg's console output is logged at debug level.  When the process exits on its own, its
+//! last lines are logged as a warning; when it is stopped on purpose (restart, end of session)
+//! the messages it prints while dying are not.
 
+use std::collections::VecDeque;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -60,11 +67,16 @@ pub fn build_args(ff: &Ffmpeg, capture: &CaptureSpec, enc: &EncoderConfig) -> Ve
     args
 }
 
+/// Console lines of FFmpeg kept for the warning logged when it exits unexpectedly.
+const STDERR_TAIL: usize = 12;
+
 /// A running capture + encode process.
 pub struct CliVideoPipeline {
     child: Child,
     frames: mpsc::Receiver<EncodedFrame>,
     config: EncoderConfig,
+    /// Set when the process is stopped on purpose, so its exit is not reported as a failure.
+    stopping: Arc<AtomicBool>,
 }
 
 impl CliVideoPipeline {
@@ -92,11 +104,21 @@ impl CliVideoPipeline {
             .spawn()
             .map_err(|e| MediaError::FfmpegNotFound(format!("{}: {e}", ff.ffmpeg.display())))?;
         let stdout = child.stdout.take().ok_or(MediaError::Stopped)?;
+        let stopping = Arc::new(AtomicBool::new(false));
         if let Some(stderr) = child.stderr.take() {
+            let stopping = Arc::clone(&stopping);
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
+                let mut tail = VecDeque::with_capacity(STDERR_TAIL);
                 while let Ok(Some(line)) = lines.next_line().await {
-                    warn!(target: "ffmpeg", "{line}");
+                    debug!(target: "ffmpeg", "{line}");
+                    if tail.len() == STDERR_TAIL {
+                        tail.pop_front();
+                    }
+                    tail.push_back(line);
+                }
+                if !stopping.load(Ordering::Relaxed) && !tail.is_empty() {
+                    warn!(target: "ffmpeg", "encoder process exited:\n{}", Vec::from(tail).join("\n"));
                 }
             });
         }
@@ -144,7 +166,7 @@ impl CliVideoPipeline {
             }
             debug!("encoder output closed");
         });
-        Ok(Self { child, frames: rx, config: enc.clone() })
+        Ok(Self { child, frames: rx, config: enc.clone(), stopping })
     }
 
     /// Returns the encoder configuration.
@@ -181,8 +203,16 @@ impl CliVideoPipeline {
 
     /// Stops the process.
     pub async fn stop(&mut self) {
+        self.stopping.store(true, Ordering::Relaxed);
         let _ = self.child.start_kill();
         let _ = tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await;
+    }
+}
+
+impl Drop for CliVideoPipeline {
+    /// Marks the stop as intended; the process itself is killed by `kill_on_drop`.
+    fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Relaxed);
     }
 }
 

@@ -16,6 +16,7 @@ mod games;
 mod gui;
 mod hotkeys;
 mod input_task;
+mod pairing;
 mod service;
 mod settings;
 mod state;

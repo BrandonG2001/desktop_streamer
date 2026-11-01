@@ -227,6 +227,8 @@ impl InputBackend for UinputBackend {
                         }
                     }
                 }
+                // Never produced: this backend does not report touch support.
+                InputEvent::TouchDown { .. } | InputEvent::TouchMove { .. } | InputEvent::TouchUp { .. } => {}
                 InputEvent::Gamepad(state) => {
                     if self.want_gamepad || self.gamepad.is_some() || *state != GamepadState::default() {
                         match self.ensure_gamepad() {
