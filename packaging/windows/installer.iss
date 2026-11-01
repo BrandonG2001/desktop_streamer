@@ -78,6 +78,8 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#FirewallRule}"" dir=in action=allow program=""{app}\{#AppExe}"" enable=yes profile=any"; Flags: runhidden; Tasks: firewall; StatusMsg: "Adding firewall rule..."
 Filename: "winget.exe"; Parameters: "install --id yt-dlp.yt-dlp -e --silent --accept-package-agreements --accept-source-agreements"; Flags: runhidden waituntilterminated; Tasks: ytdlp; StatusMsg: "Installing yt-dlp..."
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; Silent update started by the streamer's update checker (/RESTARTAPP=1): start the new version.
+Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: RestartRequested
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/IM {#AppExe} /F"; Flags: runhidden; RunOnceId: "StopApp"
@@ -89,6 +91,12 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 function OnPath(const Exe: String): Boolean;
 begin
   Result := FileSearch(Exe, GetEnv('PATH')) <> '';
+end;
+
+{ The update checker passes /RESTARTAPP=1 so the streamer is started again after a silent update. }
+function RestartRequested: Boolean;
+begin
+  Result := ExpandConstant('{param:RESTARTAPP|0}') = '1';
 end;
 
 { yt-dlp on PATH or in the WinGet links folder. }

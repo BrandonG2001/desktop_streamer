@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.0
+
+* **Update checker.** At startup and from "Check for updates" in ABOUT, the streamer looks for a newer release on GitHub. An installed Windows copy asks, then downloads the setup, checks it, installs it silently and starts again. The portable zip and Linux open the release page instead.
+
 ## 1.4.0
 
 * **Touch input on Windows.** With "Use touch input" on (the default), a laser click is a real Windows touch contact, as in the original. Clicking with both controllers makes two-finger gestures such as pinch-zoom. Right and middle clicks stay mouse clicks. Before, the option did nothing and every click was a mouse click.

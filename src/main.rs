@@ -20,6 +20,7 @@ mod pairing;
 mod service;
 mod settings;
 mod state;
+mod update;
 mod videos;
 mod youtube;
 

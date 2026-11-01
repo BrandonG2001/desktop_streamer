@@ -185,8 +185,11 @@ the decompiled `MainWindow`, `BindingSettings`, `YouTubeHelper` and converter cl
   --compat-opt prefer-vp9-sort --restrict-filenames --no-check-certificate`. It parses
   `[download] N% of` lines into `SharedStreamerSettings.DownloadState` and `DownloadProgress`.
 * **ABOUT latency:** `DynamicSettings.Latency = (int)(HeadsetState._0001 * 1000f)`, the first float of every headset state (observed in IL). The port also shows frame rate, bitrate and encode time.
-* **Not reproduced:** the update checker, "Check for interfering apps" (`AppsCheckerWindow`), the
-  hosts-file piracy warning and localisation (`CultureResources`).
+* **Update checker** (`UpdateHelper`): at startup and from ABOUT's "Check for updates", the original runs `Updater.exe /justcheck` (Advanced Installer, `-critical` at startup). If that reports an update, it starts `Updater.exe /silentall -nofreqcheck -reducedgui` and exits. If `Updater.exe` is missing, it offers to open www.vrdesktop.net. The same helper fetches `download.vrdesktop.net/files/version.txt` and flags a hosts file that redirects `vrdesktop.net`.
+  * The port reads the latest GitHub release of this repository instead. On an installed Windows copy (`unins000.exe` next to the executable), it asks, then downloads `…-setup-x64.exe` and checks its size and the SHA-256 that GitHub reports. It then runs the setup with `/SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RESTARTAPP=1` and exits. `RESTARTAPP` makes the setup start the new version.
+  * Portable and Linux copies offer the release page. The startup check asks instead of installing silently, and waits until no headset is connected.
+* **Not reproduced:** "Check for interfering apps" (`AppsCheckerWindow`), the hosts-file piracy
+  warning and localisation (`CultureResources`).
 
 ## 6c. LAN discovery and pairing prompts (`_0084_0002._0002`)
 

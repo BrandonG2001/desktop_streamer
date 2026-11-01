@@ -48,6 +48,10 @@ is not in ACCOUNTS searches the local network, the window asks "Allow Meta user 
 computer?" and adds the account on Yes. ABOUT shows the live frame rate, bitrate, encode time and
 the latency the headset reports.
 
+The streamer checks GitHub for a newer release at startup, and from "Check for updates" in ABOUT.
+An installed Windows copy can download and install it (Windows asks for administrator rights) and
+starts again afterwards. The portable zip and Linux open the release page.
+
 Quit the official streamer before starting this one, because they share ports and hotkeys.
 
 ## Building packages

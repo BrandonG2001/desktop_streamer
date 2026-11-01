@@ -708,12 +708,21 @@ impl SettingsWindow {
             ui.end_row();
         });
         ui.add_space(14.0);
-        if ui.button("Show logs").clicked() {
-            // C#: OnShowLogsClick opens the log file with the default viewer.
-            let path = crate::log_path();
-            if let Err(e) = open::that_detached(&path) {
-                self.info(format!("Unable to open {}:\n{e}", path.display()));
+        ui.horizontal(|ui| {
+            if ui.button("Show logs").clicked() {
+                // C#: OnShowLogsClick opens the log file with the default viewer.
+                let path = crate::log_path();
+                if let Err(e) = open::that_detached(&path) {
+                    self.info(format!("Unable to open {}:\n{e}", path.display()));
+                }
             }
-        }
+            // C#: btnCheckForUpdates, disabled while a check runs.
+            let idle = self.update_task.is_none();
+            let label = if idle { "Check for updates" } else { "Checking for updates..." };
+            if ui.add_enabled(idle, egui::Button::new(label)).clicked() {
+                let ctx = ui.ctx().clone();
+                self.check_for_updates(&ctx, true);
+            }
+        });
     }
 }

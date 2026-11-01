@@ -17,6 +17,7 @@ mod tray;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -31,7 +32,8 @@ use crate::bindings::BindingSettings;
 use crate::hotkeys::Hotkeys;
 use crate::settings::StreamerSettings;
 use crate::state::ConnectionStatus;
-use crate::{hotkeys, service, youtube};
+use crate::update::Release;
+use crate::{hotkeys, service, update, youtube};
 use tray::{Tray, TrayEvent};
 
 /// Window size of the original (`Width="700" Height="516"`, also the minimum size).
@@ -104,6 +106,30 @@ enum Confirm {
     /// Add the account of a headset that searched the LAN (C#: the pairing prompt of
     /// `_0095_0002._0002`).
     AllowAccount(Platform, String),
+    /// Download and install a newer release (C#: `Updater.exe /silentall`).
+    InstallUpdate(Release),
+    /// Open a web page (the release page when an update cannot be installed here).
+    OpenUrl(String),
+}
+
+/// Update check or download running in the background (C#: `UpdateHelper`).
+enum UpdateTask {
+    /// Asking GitHub for the latest release.
+    Check {
+        /// Started from "Check for updates" (report every outcome) rather than at startup.
+        manual: bool,
+        /// Result of [`update::check`].
+        rx: Receiver<Result<Option<Release>>>,
+    },
+    /// Downloading the installer.
+    Install {
+        /// Version being installed.
+        version: String,
+        /// Download progress in per mille.
+        progress: Arc<AtomicU32>,
+        /// Result of [`update::install`].
+        rx: Receiver<Result<()>>,
+    },
 }
 
 /// A message box (C#: `MessageBoxWindow`).
@@ -239,6 +265,10 @@ struct SettingsWindow {
     reconnect_after_commit: bool,
     /// Last streaming rates shown in ABOUT.
     rates: Option<StreamRates>,
+    /// Running update check or download.
+    update_task: Option<UpdateTask>,
+    /// Release found by the startup check, offered once no headset is connected.
+    pending_update: Option<Release>,
 }
 
 impl SettingsWindow {
@@ -307,7 +337,7 @@ impl SettingsWindow {
             });
         }
         let settings = app.settings.lock().expect("poisoned").clone();
-        Self {
+        let mut window = Self {
             tab: Tab::from_index(settings.selected_tab),
             editing_accounts: settings.access_tokens().is_empty(),
             app,
@@ -329,6 +359,125 @@ impl SettingsWindow {
             mic_targets: None,
             reconnect_after_commit: false,
             rates: None,
+            update_task: None,
+            pending_update: None,
+        };
+        // C#: App.OnStartup → UpdateHelper (the original installs critical updates silently).
+        window.check_for_updates(&ctx, false);
+        window
+    }
+
+    /// Starts an update check in the background (C#: `OnCheckForUpdatesClick` / startup).
+    ///
+    /// # Arguments
+    /// * `ctx` - egui context, woken when the check is done.
+    /// * `manual` - started from the button: report "no updates" and errors in a message box.
+    fn check_for_updates(&mut self, ctx: &egui::Context, manual: bool) {
+        if self.update_task.is_some() {
+            return;
+        }
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+        self.rt.spawn(async move {
+            let _ = tx.send(update::check().await);
+            ctx.request_repaint();
+        });
+        self.update_task = Some(UpdateTask::Check { manual, rx });
+    }
+
+    /// Downloads and starts the installer of `release` in the background.
+    ///
+    /// # Arguments
+    /// * `ctx` - egui context, woken when the download is done.
+    /// * `release` - the release to install.
+    fn install_update(&mut self, ctx: &egui::Context, release: Release) {
+        let (tx, rx) = channel();
+        let progress = Arc::new(AtomicU32::new(0));
+        let ctx = ctx.clone();
+        let version = release.version.clone();
+        let p = Arc::clone(&progress);
+        self.rt.spawn(async move {
+            let _ = tx.send(update::install(&release, p).await);
+            ctx.request_repaint();
+        });
+        self.update_task = Some(UpdateTask::Install { version, progress, rx });
+    }
+
+    /// Offers a newer release: install it, or open its page when this copy cannot update itself.
+    ///
+    /// # Arguments
+    /// * `release` - the release.
+    fn offer_update(&mut self, release: Release) {
+        let intro = format!("Version {} is available (this is {}).", release.version, env!("CARGO_PKG_VERSION"));
+        if update::can_install() && release.installer.is_some() {
+            self.ask(
+                format!("{intro}\n\nInstall it now? The streamer closes during the update and starts again afterwards."),
+                Confirm::InstallUpdate(release),
+            );
+        } else {
+            self.ask(format!("{intro}\n\nWould you like to open the download page?"), Confirm::OpenUrl(release.page));
+        }
+    }
+
+    /// Handles the result of a finished update check or download, and offers a release found at
+    /// startup once the window is free and no headset is connected.
+    ///
+    /// # Arguments
+    /// * `ctx` - egui context.
+    fn poll_update(&mut self, ctx: &egui::Context) {
+        match &self.update_task {
+            Some(UpdateTask::Check { manual, rx }) => {
+                let manual = *manual;
+                if let Ok(result) = rx.try_recv() {
+                    self.update_task = None;
+                    match result {
+                        Ok(Some(r)) if manual => self.offer_update(r),
+                        Ok(Some(r)) => self.pending_update = Some(r),
+                        Ok(None) if manual => self.info("No updates are currently available."),
+                        Ok(None) => {}
+                        Err(e) => {
+                            warn!(error = format!("{e:#}"), "update check failed");
+                            if manual {
+                                self.ask(
+                                    format!("Unable to check for updates:\n{e:#}\n\nWould you like to open the download page?"),
+                                    Confirm::OpenUrl(update::RELEASES_URL.to_owned()),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Some(UpdateTask::Install { rx, .. }) => {
+                if let Ok(result) = rx.try_recv() {
+                    self.update_task = None;
+                    match result {
+                        // The setup replaces the files once this process is gone.
+                        Ok(()) => self.quit(ctx),
+                        Err(e) => {
+                            warn!(error = format!("{e:#}"), "update failed");
+                            self.info(format!("Unable to install the update:\n{e:#}"));
+                        }
+                    }
+                }
+            }
+            None => {}
+        }
+        if self.dialog.is_none() && self.add_account.is_none() && !self.app.state.dynamic.borrow().is_connected
+            && let Some(r) = self.pending_update.take()
+        {
+            self.offer_update(r);
+            self.show(ctx);
+        }
+    }
+
+    /// Progress of a running update download, for the footer.
+    ///
+    /// # Returns
+    /// Version and progress (0–1), or `None` when no download runs.
+    fn update_progress(&self) -> Option<(String, f32)> {
+        match &self.update_task {
+            Some(UpdateTask::Install { version, progress, .. }) => Some((version.clone(), progress.load(Ordering::Relaxed) as f32 / 1000.0)),
+            _ => None,
         }
     }
 
@@ -561,6 +710,12 @@ impl SettingsWindow {
             ui.add_space(16.0);
             ui.label(RichText::new("Version:").color(theme::TEXT_TAB));
             ui.label(format!("{} (port of 1.34.18)", env!("CARGO_PKG_VERSION")));
+            if let Some((version, progress)) = self.update_progress() {
+                ui.add_space(12.0);
+                ui.label(RichText::new(format!("Downloading {version}...")).color(theme::TEXT_DIM));
+                ui.add(egui::ProgressBar::new(progress).desired_width(100.0).show_percentage());
+                ui.ctx().request_repaint_after(Duration::from_millis(200));
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(16.0);
                 let (state, progress) = {
@@ -660,6 +815,12 @@ impl SettingsWindow {
                     self.reconnect_after_commit = !self.app.state.dynamic.borrow().is_connected;
                 }
             }
+            Some(Confirm::InstallUpdate(release)) => self.install_update(ctx, release),
+            Some(Confirm::OpenUrl(url)) => {
+                if let Err(e) = open::that_detached(&url) {
+                    self.info(format!("Unable to open {url}:\n{e}"));
+                }
+            }
             None => {}
         }
     }
@@ -684,6 +845,7 @@ impl SettingsWindow {
             }
         }
         self.next_pairing_request(ctx);
+        self.poll_update(ctx);
         // A headset `Exit` message stops the streamer; close the window with it.
         if self.app.is_shutting_down() && !self.quitting {
             self.quit(ctx);
