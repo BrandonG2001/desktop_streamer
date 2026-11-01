@@ -32,8 +32,15 @@ pub enum ConnectionStatus {
 pub struct DynamicState {
     /// All four channels connected (`IsConnected`).
     pub is_connected: bool,
-    /// Available monitors (`Monitors`).
+    /// Available monitors (`Monitors`), physical and virtual; see
+    /// [`crate::desktop::streamable`] for the ones that are streamed.
     pub monitors: Vec<MonitorInfo>,
+    /// Virtual monitors are being added or removed; the desktop stream waits for the new layout.
+    pub virtual_pending: bool,
+    /// Virtual monitors added for this session (see [`crate::virtual_monitors`]).
+    pub virtual_monitors: usize,
+    /// The virtual display driver could not be opened for the current target.
+    pub virtual_failed: bool,
     /// First monitor to stream (`MonitorStartIndex`, advanced by `SwitchMonitor`).
     pub monitor_start_index: usize,
     /// Incremented whenever a key frame must be produced (`ForceKeyFrame = true`).

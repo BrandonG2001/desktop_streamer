@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.0
+
+* **Virtual monitors (Windows)** through the free Parsec Virtual Display Driver (`winget install Parsec.ParsecVDD`). OPTIONS → Monitors has two new choices:
+  * "Physical monitors" (default) works like the original: when you ask for more monitors than the PC has (the setting, or + in VR), virtual ones are added after the physical ones.
+  * "Virtual monitors" streams only virtual monitors: a separate workspace in the headset, while your monitors stay as they are. Drag windows onto them.
+  * A resolution (default 1920 × 1080) applies to both. The virtual monitors exist only while a headset is connected.
+* Monitors are now matched to the screen capture by name, which keeps capture right when displays are added or removed.
+
 ## 1.5.0
 
 * **Update checker.** At startup and from "Check for updates" in ABOUT, the streamer looks for a newer release on GitHub. An installed Windows copy asks, then downloads the setup, checks it, installs it silently and starts again. The portable zip and Linux open the release page instead.

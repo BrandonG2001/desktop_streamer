@@ -79,6 +79,36 @@ pub struct PortOptions {
     /// virtual cable), `vdvad`, or the endpoint id of a virtual cable's playback device.
     #[serde(rename = "MicrophoneDevice", default = "mic_auto")]
     pub microphone_device: String,
+    /// Stream virtual monitors (Parsec Virtual Display Driver) instead of the physical ones.
+    /// When off, virtual monitors are only added when `MonitorCount` asks for more monitors than
+    /// the PC has, like the original.
+    #[serde(rename = "VirtualMonitors")]
+    pub virtual_monitors: bool,
+    /// Resolution of the virtual monitors, `WIDTHxHEIGHT`.
+    #[serde(rename = "VirtualMonitorResolution", default = "virtual_resolution")]
+    pub virtual_monitor_resolution: String,
+}
+
+/// Resolutions offered for virtual monitors (all are modes of the Parsec driver).
+pub const VIRTUAL_RESOLUTIONS: [(u32, u32); 9] = [(1280, 720), (1600, 900), (1920, 1080), (1920, 1200), (2560, 1080), (2560, 1440), (2560, 1600), (3440, 1440), (3840, 2160)];
+
+/// Serde default for `Port.VirtualMonitorResolution`.
+fn virtual_resolution() -> String {
+    "1920x1080".to_owned()
+}
+
+impl PortOptions {
+    /// Parsed [`PortOptions::virtual_monitor_resolution`].
+    ///
+    /// # Returns
+    /// Width and height; 1920×1080 when the value is not `WIDTHxHEIGHT`.
+    pub fn virtual_resolution(&self) -> (u32, u32) {
+        self.virtual_monitor_resolution
+            .split_once(['x', 'X'])
+            .and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)))
+            .filter(|&(w, h): &(u32, u32)| w > 0 && h > 0)
+            .unwrap_or((1920, 1080))
+    }
 }
 
 /// Current settings layout version.  1: `MonitorCount` 0 means "all monitors" (earlier builds
@@ -109,6 +139,8 @@ impl Default for PortOptions {
             keyframe_interval_seconds: 2,
             manage_audio_devices: true,
             microphone_device: mic_auto(),
+            virtual_monitors: false,
+            virtual_monitor_resolution: virtual_resolution(),
             // Raised by `StreamerSettings::migrate` after loading.
             settings_version: 0,
         }

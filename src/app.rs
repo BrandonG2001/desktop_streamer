@@ -2,7 +2,7 @@
 //! `StreamerManager` and the `SettingsBase<T>.Default` singletons of the original.
 
 use std::collections::{HashSet, VecDeque};
-use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tokio::sync::{Notify, mpsc, watch};
@@ -125,6 +125,9 @@ pub struct App {
     pub paired_headsets: Mutex<HashSet<String>>,
     /// Live streaming figures.
     pub stats: StreamStats,
+    /// The Parsec Virtual Display Driver can be opened, so monitors can be added beyond the
+    /// physical ones (checked at start-up and whenever the driver is opened).
+    pub virtual_available: AtomicBool,
 }
 
 /// Receivers created together with the [`App`].
@@ -171,6 +174,7 @@ impl App {
             pairing_notify: Notify::new(),
             paired_headsets: Mutex::default(),
             stats: StreamStats::default(),
+            virtual_available: AtomicBool::new(false),
         });
         (app, AppReceivers { inbound: Inbound { messages, states, gaze, mic }, peers, video: video_rx })
     }
@@ -206,8 +210,11 @@ impl App {
     /// The previous settings.
     pub fn update_settings(&self, new: StreamerSettings) -> StreamerSettings {
         let old = std::mem::replace(&mut *self.settings.lock().expect("poisoned"), new.clone());
-        if old.monitor_count != new.monitor_count {
-            // Re-plan the desktop stream with the new number of monitors.
+        if old.monitor_count != new.monitor_count
+            || old.port.virtual_monitors != new.port.virtual_monitors
+            || old.port.virtual_monitor_resolution != new.port.virtual_monitor_resolution
+        {
+            // Re-plan the virtual monitors and the desktop stream with the new layout.
             self.state.dynamic.send_modify(|_| {});
         }
         if old.auto_adjust_bitrate != new.auto_adjust_bitrate {

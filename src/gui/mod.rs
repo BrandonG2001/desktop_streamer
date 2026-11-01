@@ -261,6 +261,8 @@ struct SettingsWindow {
     video_folders: Option<Vec<VideoFolder>>,
     /// Cached microphone choices: Virtual Desktop driver present, and cable playback devices.
     mic_targets: Option<(bool, Vec<(String, String)>)>,
+    /// Cached: the Parsec Virtual Display Driver is installed (checked when OPTIONS opens).
+    virtual_driver: Option<bool>,
     /// Register again once this frame's settings are applied (an account was added).
     reconnect_after_commit: bool,
     /// Last streaming rates shown in ABOUT.
@@ -357,6 +359,7 @@ impl SettingsWindow {
             system,
             video_folders: None,
             mic_targets: None,
+            virtual_driver: None,
             reconnect_after_commit: false,
             rates: None,
             update_task: None,
@@ -696,6 +699,7 @@ impl SettingsWindow {
                 }
                 if tab == Tab::Options {
                     self.mic_targets = None;
+                    self.virtual_driver = None;
                 }
             }
         }

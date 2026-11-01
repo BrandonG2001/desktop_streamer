@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use crate::app::{self, App};
 use crate::settings::StreamerSettings;
-use crate::{audio_task, connection, desktop, dispatch, input_task, videos};
+use crate::{audio_task, connection, desktop, dispatch, input_task, videos, virtual_monitors};
 
 /// Creates the application context and spawns every task on the current Tokio runtime.
 ///
@@ -37,6 +37,7 @@ pub fn start(settings: StreamerSettings, direct: bool) -> Arc<App> {
     tokio::spawn(audio_task::run(Arc::clone(&app), rx.inbound.mic));
     tokio::spawn(input_task::run(Arc::clone(&app), rx.inbound.states));
     tokio::spawn(videos::run(Arc::clone(&app), rx.video));
+    tokio::spawn(virtual_monitors::run(Arc::clone(&app)));
     tokio::spawn(session_side_effects(Arc::clone(&app)));
     // Gaze samples drive the dynamic foveation map of the VR encoder, which is not ported; drain them.
     tokio::spawn(async move {

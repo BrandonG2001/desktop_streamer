@@ -13,7 +13,7 @@ use vd_protocol::types::{AudioStreaming, GamepadEmulation, NetworkConnectionType
 use super::{AddAccount, Confirm, SettingsWindow, VideoFolder, dialog_frame, theme};
 use crate::bindings::{BindingAction, KEYS, key_label, modifiers};
 use crate::pairing::MAX_ACCOUNTS_PER_PLATFORM;
-use crate::settings::StreamerSettings;
+use crate::settings::{StreamerSettings, VIRTUAL_RESOLUTIONS};
 
 /// Platforms offered by "Add account" (C#: `PlatformProvider`).
 const ADDABLE_PLATFORMS: [Platform; 5] = [Platform::OculusQuest, Platform::Pico, Platform::Google, Platform::PlayForDream, Platform::Vive];
@@ -419,6 +419,9 @@ impl SettingsWindow {
                 section(ui, "Monitors");
                 combo(ui, "monitors", &mut s.monitor_count, &[(0, "All"), (1, "1"), (2, "2"), (3, "3")]);
                 ui.label(RichText::new("Monitors shown in the headset at once (also changed with + / − in VR)").size(11.0).color(theme::TEXT_DIM));
+                if cfg!(windows) {
+                    self.virtual_monitor_options(ui, s);
+                }
                 ui.add_space(8.0);
                 section(ui, "OpenXR Runtime");
                 combo(ui, "openxr", &mut s.openxr_runtime, &[(OpenXrRuntime::Automatic, "Automatic"), (OpenXrRuntime::SteamVR, "SteamVR"), (OpenXrRuntime::VDXR, "VDXR")]);
@@ -606,6 +609,35 @@ impl SettingsWindow {
         }
         if refresh {
             self.video_folders = None;
+        }
+    }
+
+    /// Virtual-monitor choices under "Monitors" (Windows, Parsec Virtual Display Driver).
+    ///
+    /// # Arguments
+    /// * `ui` - column UI.
+    /// * `s` - settings being edited.
+    fn virtual_monitor_options(&mut self, ui: &mut egui::Ui, s: &mut StreamerSettings) {
+        let available = *self.virtual_driver.get_or_insert_with(vd_platform::virtual_display::is_available);
+        ui.add_space(4.0);
+        ui.add_enabled_ui(available, |ui| {
+            combo(ui, "monitor_kind", &mut s.port.virtual_monitors, &[(false, "Physical monitors"), (true, "Virtual monitors")]);
+            let labels: Vec<((u32, u32), String)> = VIRTUAL_RESOLUTIONS.iter().map(|&(w, h)| ((w, h), format!("{w} × {h}"))).collect();
+            let options: Vec<((u32, u32), &str)> = labels.iter().map(|(v, l)| (*v, l.as_str())).collect();
+            let mut size = s.port.virtual_resolution();
+            combo(ui, "virtual_resolution", &mut size, &options);
+            if size != s.port.virtual_resolution() {
+                s.port.virtual_monitor_resolution = format!("{}x{}", size.0, size.1);
+            }
+            let hint = if s.port.virtual_monitors {
+                "Only virtual monitors of this size are shown; they exist while the headset is connected"
+            } else {
+                "Virtual monitors of this size are added when you ask for more monitors than the PC has"
+            };
+            ui.label(RichText::new(hint).size(11.0).color(theme::TEXT_DIM));
+        });
+        if !available {
+            ui.label(RichText::new("Virtual monitors need the Parsec Virtual Display Driver:\nwinget install Parsec.ParsecVDD").size(11.0).color(theme::TEXT_DIM));
         }
     }
 

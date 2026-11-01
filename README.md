@@ -48,6 +48,11 @@ is not in ACCOUNTS searches the local network, the window asks "Allow Meta user 
 computer?" and adds the account on Yes. ABOUT shows the live frame rate, bitrate, encode time and
 the latency the headset reports.
 
+Virtual monitors (Windows) need the free Parsec Virtual Display Driver
+(`winget install Parsec.ParsecVDD`). OPTIONS → Monitors → "Virtual monitors" streams only virtual
+monitors, created while the headset is connected, so the headset gets its own workspace. With
+"Physical monitors", virtual ones are added only when you ask for more monitors than the PC has.
+
 The streamer checks GitHub for a newer release at startup, and from "Check for updates" in ABOUT.
 An installed Windows copy can download and install it (Windows asks for administrator rights) and
 starts again afterwards. The portable zip and Linux open the release page.

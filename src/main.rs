@@ -22,6 +22,7 @@ mod settings;
 mod state;
 mod update;
 mod videos;
+mod virtual_monitors;
 mod youtube;
 
 use anyhow::{Context, Result, bail};

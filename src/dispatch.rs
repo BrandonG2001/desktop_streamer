@@ -123,9 +123,10 @@ pub async fn sync_streamer_settings(app: Arc<App>) {
 /// # Arguments
 /// * `app` - application context.
 pub fn switch_monitor(app: &App) {
+    let streamable = crate::desktop::streamable(app, &app.state.dynamic.borrow().monitors).len();
     app.state.dynamic.send_modify(|d| {
-        if !d.monitors.is_empty() {
-            d.monitor_start_index = (d.monitor_start_index + 1) % d.monitors.len();
+        if streamable > 0 {
+            d.monitor_start_index = (d.monitor_start_index + 1) % streamable;
         }
     });
     app.request_keyframe_all();

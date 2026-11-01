@@ -11,8 +11,9 @@
 //! * monitor count = `min(monitors, max_monitors(hmd), MonitorCount)` (`MonitorCount` 0 = all),
 //!   and 1 without a hardware encoder;
 //! * the headset's add/remove-monitor buttons change `MonitorCount` ([`change_monitor_count`]);
-//!   adding stops at the physical monitors because virtual monitors (`IVirtualMonitor`, the
-//!   original's IddCx display driver) are not ported;
+//!   beyond the physical monitors, [`crate::virtual_monitors`] adds virtual ones when the Parsec
+//!   Virtual Display Driver is installed (the original's `IVirtualMonitor`);
+//! * in virtual mode (`Port.VirtualMonitors`) only the virtual monitors are streamed;
 //! * each monitor is scaled down (aspect preserved) to the pixel budget of
 //!   `max_desktop_resolution(hmd, count)`;
 //! * frame rate = `min(display refresh, SharedMobileSettings.DesktopFramerate)`;
@@ -66,8 +67,28 @@ pub struct StreamPlan {
 pub fn list_monitors(fallback: (i32, i32)) -> Vec<MonitorInfo> {
     match vd_platform::display::monitors() {
         Ok(m) if !m.is_empty() => m,
-        Ok(_) | Err(_) => vec![MonitorInfo { id: "default".into(), index: 0, x: 0, y: 0, width: fallback.0 as u32, height: fallback.1 as u32, refresh_hz: 60, primary: true }],
+        Ok(_) | Err(_) => vec![MonitorInfo { id: "default".into(), index: 0, x: 0, y: 0, width: fallback.0 as u32, height: fallback.1 as u32, refresh_hz: 60, primary: true, is_virtual: false }],
     }
+}
+
+/// The monitors that are streamed, in order: the virtual ones in virtual mode (falling back to
+/// the physical ones when none exist), otherwise the physical ones followed by any virtual ones.
+///
+/// # Arguments
+/// * `app` - application context (the mode setting).
+/// * `monitors` - all monitors.
+///
+/// # Returns
+/// The streamable monitors.
+pub fn streamable(app: &App, monitors: &[MonitorInfo]) -> Vec<MonitorInfo> {
+    let virtual_mode = app.settings.lock().expect("poisoned").port.virtual_monitors;
+    if virtual_mode && monitors.iter().any(|m| m.is_virtual) {
+        return monitors.iter().filter(|m| m.is_virtual).cloned().collect();
+    }
+    let mut list = monitors.to_vec();
+    // Stable: physical monitors keep their order and come first.
+    list.sort_by_key(|m| m.is_virtual);
+    list
 }
 
 /// Builds the plan from the current state.
@@ -84,15 +105,16 @@ pub fn plan(app: &App, media: &MediaEnv) -> Option<StreamPlan> {
     let dynamic = app.state.dynamic.borrow().clone();
     let preferred = app.settings.lock().expect("poisoned").preferred_codec;
     let hmd_type = mobile.hmd_type;
-    if dynamic.monitors.is_empty() {
+    let streamed = streamable(app, &dynamic.monitors);
+    if streamed.is_empty() || !crate::virtual_monitors::settled(app) {
         return None;
     }
-    let count = monitor_count(app, media.backend.is_hardware()).1 as usize;
+    let count = (monitor_count(app, media.backend.is_hardware()).1 as usize).min(streamed.len());
     let (mw, mh) = hmd::max_desktop_resolution(hmd_type, count as i32);
     let budget = i64::from(mw) * i64::from(mh);
     let mut monitors = Vec::with_capacity(count);
     for i in 0..count {
-        let m = dynamic.monitors[(dynamic.monitor_start_index + i) % dynamic.monitors.len()].clone();
+        let m = streamed[(dynamic.monitor_start_index + i) % streamed.len()].clone();
         let size = Size2::new(m.width as i32, m.height as i32).clamp_to_pixels(budget);
         monitors.push((m, size));
     }
@@ -115,7 +137,8 @@ pub fn plan(app: &App, media: &MediaEnv) -> Option<StreamPlan> {
 
 /// Monitors that can be streamed and how many are, from `MonitorCount`.
 /// C#: `MonitorCount = HasHardwareEncoder ? min(MonitorCount, MaxMonitors(hmd)) : 1`, with
-/// 0 filled in as "all monitors" (`DynamicSettings.Monitors` setter).
+/// 0 filled in as "all monitors" (`DynamicSettings.Monitors` setter).  With the virtual display
+/// driver the maximum is the headset's, as monitors can be added.
 ///
 /// # Arguments
 /// * `app` - application context.
@@ -124,10 +147,17 @@ pub fn plan(app: &App, media: &MediaEnv) -> Option<StreamPlan> {
 /// # Returns
 /// `(maximum, current)`, both at least 1.
 pub fn monitor_count(app: &App, hardware: bool) -> (i32, i32) {
-    let monitors = app.state.dynamic.borrow().monitors.len() as i32;
-    let max = if hardware { hmd::max_monitors(app.state.mobile.borrow().hmd_type).min(monitors).max(1) } else { 1 };
-    let wanted = app.settings.lock().expect("poisoned").monitor_count;
-    let current = if wanted <= 0 { max } else { wanted.min(max) };
+    let streamed = streamable(app, &app.state.dynamic.borrow().monitors).len() as i32;
+    let cap = if hardware { hmd::max_monitors(app.state.mobile.borrow().hmd_type) } else { 1 };
+    let growable = app.virtual_available.load(Ordering::Relaxed);
+    let max = if growable { cap } else { cap.min(streamed) }.max(1);
+    let (wanted, virtual_mode) = {
+        let s = app.settings.lock().expect("poisoned");
+        (s.monitor_count, s.port.virtual_monitors)
+    };
+    // "All": every physical monitor, or as many virtual ones as the headset shows.
+    let all = if virtual_mode && growable { cap } else { cap.min(streamed) };
+    let current = if wanted <= 0 { all } else { wanted.min(max) };
     (max, current.max(1))
 }
 
@@ -143,7 +173,11 @@ pub fn change_monitor_count(app: &App, delta: i32) {
     let new = (current + delta).clamp(1, max);
     if new == current {
         if delta > 0 {
-            warn!(max, "cannot add a monitor: all physical monitors are streamed (virtual monitors are not supported by this port)");
+            if app.virtual_available.load(Ordering::Relaxed) {
+                warn!(max, "cannot add a monitor: the headset shows at most this many");
+            } else {
+                warn!(max, "cannot add a monitor: all physical monitors are streamed (install the Parsec Virtual Display Driver for more)");
+            }
         }
         return;
     }
@@ -413,7 +447,7 @@ async fn stream(app: &Arc<App>, media: &MediaEnv, mut plan: StreamPlan, last_des
     info!(codec = plan.codec.display_name(), fps = plan.framerate, bitrate = plan.bitrate, monitors = plan.monitors.len(), "desktop streaming");
     app.state.streamer.send_modify(|s| {
         s.active_codec = plan.codec;
-        s.can_switch_monitor = app.state.dynamic.borrow().monitors.len() > 1;
+        s.can_switch_monitor = streamable(app, &app.state.dynamic.borrow().monitors).len() > 1;
         // C#: DesktopStreamer._0008() — buttons only with a hardware encoder; adding is limited to
         // physical monitors here.
         let hardware = media.backend.is_hardware();

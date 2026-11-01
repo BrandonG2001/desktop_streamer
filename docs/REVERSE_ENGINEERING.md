@@ -18,7 +18,7 @@ from usage and still needs confirming against live traffic.
 | `VirtualDesktop.Injector{32,64}.dll`, `VirtualDesktop.LibOVRRT{32,64}_1.dll`, `openxr-oculus-compatibility.dll` | C++ (MinHook) | Oculus-runtime emulation and hooking for VR games | **Not ported** (Windows-only by nature) |
 | `OpenVRDriver/…/driver_VirtualDesktop.dll` | C++ | SteamVR driver | **Not ported**; IPC contract documented in §6 |
 | `OpenXR/virtualdesktop-openxr.dll` (VDXR) | C++ | OpenXR runtime | **Not ported** (VDXR is open source: mbucchia/VirtualDesktop-OpenXR) |
-| `AudioDriver/vdvad.sys`, `GamepadDriver/vdvge.sys`, `MonitorDriver/vdvmd.dll` | Kernel / IddCx drivers | Virtual audio device, virtual gamepad, virtual monitors | Windows: the installed `vdvad.sys` is reused for the microphone (`IKsControl`). Linux: PulseAudio/PipeWire modules and `/dev/uinput`. Virtual monitors are not ported. |
+| `AudioDriver/vdvad.sys`, `GamepadDriver/vdvge.sys`, `MonitorDriver/vdvmd.dll` | Kernel / IddCx drivers | Virtual audio device, virtual gamepad, virtual monitors | Windows: the installed `vdvad.sys` is reused for the microphone (`IKsControl`). Linux: PulseAudio/PipeWire modules and `/dev/uinput`. Virtual monitors use the Parsec Virtual Display Driver instead of `vdvmd.dll` (§6d). |
 | `Updater.exe`, `VirtualDesktop.Setup.exe`, `VirtualDesktop.Service.msi` | Installer / updater | — | Not ported |
 | `C:\Program Files\Virtual Desktop\VirtualDesktop.Service.exe` / `Server.exe` | .NET (outside the analysed folder) | SYSTEM service: WCF `IInputInjection`, `IMonitorDuplication`, `IAudioService`, `IVirtualMonitor`, `IServiceManager` | Functions performed in-process (`vd-platform`) |
 
@@ -206,6 +206,27 @@ Observed in 1.34.25, the version installed when this was ported. The service run
 * **Connect request** (17 bytes): `ConnectionID ‖ platform`. The streamer then opens a LAN session to the sender with the session key, without the relay.
 * **Unknown account:** the first request per headset key raises the prompt "Allow {Meta|platform} user '{account}' to access this computer?" when `ShowPairingRequests` is on. Its "don't ask again" box sets `ShowPairingRequests = false`. On Yes, the account is added if `CanAddAccountID` allows it (not listed, fewer than 5 per platform), the settings are saved, and registration restarts unless a headset is connected.
 * **Port:** only the unknown-account path (the prompt) is implemented. Headsets with a known account still find the PC through the registry, so the PC does not reply to LAN discovery.
+
+## 6d. Virtual monitors (`IVirtualMonitor`)
+
+* **Original:** the service's `IVirtualMonitor` (`Add`, `Remove`, `AddIfNecessary(count)`) drives `vdvmd.dll`.
+  * At session start, `StreamerManager` calls `AddIfNecessary(max(1, min(MonitorCount, MaxMonitors(hmd))))`, or 1 without a hardware encoder.
+  * The headset's add-monitor button (`DesktopStreamer._0005`) calls `Add()` when `Monitors.Length <= MonitorCount`, then `MonitorCount++`. The remove button calls `Remove()`, then `MonitorCount--`.
+  * `SharedUserSettings.ExtraDisplay` adds or removes one virtual monitor (not ported).
+  * The stream descriptor describes at most 3 monitors, so a headset never shows more than 3.
+* **Port:** the Parsec Virtual Display Driver (`winget install Parsec.ParsecVDD`, 0.45 tested). Its control interface comes from github.com/nomi-san/parsec-vdd (`core/parsec-vdd.h`):
+  * the device interface `{00b41627-04c4-429e-a26e-0265cf50c8fa}`, opened for overlapped I/O;
+  * `DeviceIoControl` with 32 input bytes: `0x22E004` adds a display and returns its index; `0x22A008` removes the display whose 16-bit big-endian index is in the input; `0x22A00C` is the keep-alive; `0x22E010` returns the version.
+  * Without the keep-alive (sent every 100 ms), the driver removes its displays after about 3 s.
+* **Observed timing:**
+  * Windows attaches a display about 100 ms after the add.
+  * The driver completes an add or remove request only once Windows has finished the previous display change, which takes about 3 s. A second add, or a remove right after a mode change, therefore takes 2.5–3 s. A remove while ddagrab captures the display is immediate.
+* **Driver modes:** 24, 30, 60, 144 and 240 Hz for common resolutions up to 4096×2160 (no 72, 90 or 120 Hz). The port picks the lowest rate at or above the headset's desktop frame rate.
+* **Capture:** ddagrab captures the virtual displays as outputs of the rendering GPU. The port now numbers monitors by their DXGI output name rather than by enumeration order.
+* **Modes:**
+  * **Physical** (default) works like the original: virtual monitors fill up to `MonitorCount`, after the physical ones.
+  * **Virtual** streams only virtual monitors (`MonitorCount`, "All" = the headset maximum).
+  * In both modes the virtual monitors exist only while a headset is connected.
 
 ## 7. Known uncertainties
 

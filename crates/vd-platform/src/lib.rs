@@ -14,6 +14,7 @@
 //! | `IInputInjection`   | [`input`]       | `/dev/uinput` keyboard, mouse, pointer, pad | `SendInput`                   |
 //! | `LoopbackCapture`, `Microphone`, `IAudioService` + `vdvad.sys` | [`audio`] | PulseAudio/PipeWire null sink + remap source | WASAPI loopback + `IKsControl` on the installed `vdvad.sys` |
 //! | `IMonitorDuplication.GetMonitors` | [`display`] | `xrandr --listmonitors`            | `EnumDisplayMonitors`         |
+//! | `IVirtualMonitor` + `vdvmd.dll` | [`virtual_display`] | not available                  | Parsec Virtual Display Driver |
 //! | `libVirtualDesktopNet.dll` | [`wlan`] | `iw` power-save off                         | `wlanapi` (exact port)        |
 //! | `IServiceManager.UseRealtimePriority` | [`process`] | `setpriority`                    | `SetPriorityClass`            |
 //! | named shared memory / events (VR drivers) | [`shm`] | POSIX `shm_open` + `sem_open`  | `CreateFileMapping` / events  |
@@ -29,6 +30,7 @@ pub mod keymap;
 pub mod process;
 pub mod shm;
 pub mod system;
+pub mod virtual_display;
 pub mod wlan;
 
 pub use error::{PlatformError, Result};

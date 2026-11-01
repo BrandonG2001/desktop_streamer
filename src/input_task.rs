@@ -52,6 +52,8 @@ fn open(app: &App) -> Box<dyn InputBackend> {
 pub async fn run(app: Arc<App>, mut states: mpsc::Receiver<HeadsetState>) {
     let mut translator = InputTranslator::new();
     let mut backend: Option<Box<dyn InputBackend>> = None;
+    // Monitor layout the backend was opened for (absolute coordinates span the whole desktop).
+    let mut layout = Vec::new();
     let mut dyn_rx = app.state.dynamic.subscribe();
     // Mouse-mode motion is a velocity the server applies every millisecond between packets.
     let mut motion = tokio::time::interval(MOTION_TICK);
@@ -83,7 +85,10 @@ pub async fn run(app: Arc<App>, mut states: mpsc::Receiver<HeadsetState>) {
                 if !desktop && !gamepad && backend.is_none() {
                     continue;
                 }
-                let b = backend.get_or_insert_with(|| open(&app));
+                let b = backend.get_or_insert_with(|| {
+                    layout = app.state.dynamic.borrow().monitors.clone();
+                    open(&app)
+                });
                 // C#: IInputInjection.UseTouchInput(StreamerSettings.UseTouchInput).
                 translator.set_touch(app.settings.lock().expect("poisoned").use_touch_input && b.supports_touch());
                 // Pointer coordinates are already physical virtual-desktop pixels.
@@ -99,8 +104,13 @@ pub async fn run(app: Arc<App>, mut states: mpsc::Receiver<HeadsetState>) {
             }
             r = dyn_rx.changed() => {
                 if r.is_err() { return }
-                if !dyn_rx.borrow().is_connected {
-                    // C#: IInputInjection.ReleaseInput() when the session ends.
+                let (connected, moved) = {
+                    let d = dyn_rx.borrow();
+                    (d.is_connected, crate::virtual_monitors::layout_changed(&layout, &d.monitors))
+                };
+                // C#: IInputInjection.ReleaseInput() when the session ends.  A new monitor layout
+                // (virtual monitors added or removed) reopens the backend with the new desktop.
+                if !connected || (moved && backend.is_some()) {
                     if let Some(b) = backend.as_mut() {
                         let _ = b.emit(&translator.release_all());
                     }
