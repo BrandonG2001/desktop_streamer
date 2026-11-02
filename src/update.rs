@@ -9,6 +9,7 @@
 //! copies only point to the release page.
 
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -231,7 +232,15 @@ pub async fn install(release: &Release, progress: Arc<AtomicU32>) -> Result<()> 
     let asset = release.installer.as_ref().context("this release has no Windows installer")?;
     let path = download(asset, &progress).await?;
     info!(version = %release.version, path = %path.display(), "starting the update");
-    std::process::Command::new(&path).args(SETUP_ARGS).spawn().with_context(|| format!("cannot start {}", path.display()))?;
+    // No inherited standard handles: after `detach_own_console` they are stale (their values may
+    // even belong to sockets by now), and `CreateProcess` rejects them (os error 6 or 50).
+    std::process::Command::new(&path)
+        .args(SETUP_ARGS)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("cannot start {}", path.display()))?;
     Ok(())
 }
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.1
+
+* Fixed "Install update" failing with "The request is not supported. (os error 50)" when the streamer was started from its shortcut. Launching Steam games had the same problem and is fixed too.
+
 ## 1.6.0
 
 * **Virtual monitors (Windows)** through the free Parsec Virtual Display Driver (`winget install Parsec.ParsecVDD`). OPTIONS → Monitors has two new choices:
