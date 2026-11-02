@@ -174,10 +174,10 @@ pub fn gpu_name() -> Option<String> {
     {
         if let Ok(dir) = std::fs::read_dir("/proc/driver/nvidia/gpus") {
             for e in dir.flatten() {
-                if let Ok(text) = std::fs::read_to_string(e.path().join("information")) {
-                    if let Some(model) = text.lines().find_map(|l| l.strip_prefix("Model:")) {
-                        return Some(model.trim().to_owned());
-                    }
+                if let Ok(text) = std::fs::read_to_string(e.path().join("information"))
+                    && let Some(model) = text.lines().find_map(|l| l.strip_prefix("Model:"))
+                {
+                    return Some(model.trim().to_owned());
                 }
             }
         }

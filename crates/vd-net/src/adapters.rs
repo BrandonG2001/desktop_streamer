@@ -46,7 +46,7 @@ fn wireless_and_gigabit(name: &str) -> (bool, bool) {
     let base = std::path::Path::new("/sys/class/net").join(name);
     let wireless = base.join("wireless").exists() || base.join("phy80211").exists();
     let speed = std::fs::read_to_string(base.join("speed")).ok().and_then(|s| s.trim().parse::<i64>().ok());
-    (wireless, wireless || speed.is_none_or(|s| s >= 1000 || s < 0))
+    (wireless, wireless || speed.is_none_or(|s| !(0..1000).contains(&s)))
 }
 
 #[cfg(not(target_os = "linux"))]
