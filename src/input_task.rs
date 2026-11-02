@@ -96,11 +96,10 @@ pub async fn run(app: Arc<App>, mut states: mpsc::Receiver<HeadsetState>) {
                 if RELEASE_GAMEPAD.swap(false, Ordering::Relaxed) {
                     events.push(InputEvent::Gamepad(GamepadState::default()));
                 }
-                if !events.is_empty() {
-                    if let Err(e) = b.emit(&events) {
+                if !events.is_empty()
+                    && let Err(e) = b.emit(&events) {
                         warn!(error = %e, "input injection failed");
                     }
-                }
             }
             r = dyn_rx.changed() => {
                 if r.is_err() { return }

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+* When started from its shortcut, the streamer now clears its standard input and output after closing its console. Before, log output could land in an unrelated file or network connection, and programs it started could fail to launch (the cause of the 1.6.1 fix).
+
 ## 1.6.1
 
 * Fixed "Install update" failing with "The request is not supported. (os error 50)" when the streamer was started from its shortcut. Launching Steam games had the same problem and is fixed too.

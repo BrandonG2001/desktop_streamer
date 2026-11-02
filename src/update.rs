@@ -232,8 +232,8 @@ pub async fn install(release: &Release, progress: Arc<AtomicU32>) -> Result<()> 
     let asset = release.installer.as_ref().context("this release has no Windows installer")?;
     let path = download(asset, &progress).await?;
     info!(version = %release.version, path = %path.display(), "starting the update");
-    // No inherited standard handles: after `detach_own_console` they are stale (their values may
-    // even belong to sockets by now), and `CreateProcess` rejects them (os error 6 or 50).
+    // No inherited standard handles, whatever state the console is in (1.5.0 and 1.6.0 passed
+    // stale ones here, which `CreateProcess` rejected; see `detach_own_console`).
     std::process::Command::new(&path)
         .args(SETUP_ARGS)
         .stdin(Stdio::null())

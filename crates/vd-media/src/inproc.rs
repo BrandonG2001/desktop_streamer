@@ -135,7 +135,9 @@ fn graph_description(capture: &CaptureSpec, enc: &EncoderConfig) -> Option<Strin
 /// `(key, value)` pairs for an `AVDictionary`.
 fn private_options(args: &[String]) -> Vec<(String, String)> {
     const FIELDS: [&str; 7] = ["-c:v", "-g", "-bf", "-b:v", "-maxrate", "-bufsize", "-pix_fmt"];
-    args.chunks_exact(2)
+    args.as_chunks::<2>()
+        .0
+        .iter()
         .filter(|kv| !FIELDS.contains(&kv[0].as_str()))
         .map(|kv| {
             let key = kv[0].trim_start_matches('-');

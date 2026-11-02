@@ -65,12 +65,14 @@ async fn main() -> std::io::Result<()> {
 
     let mut messaging = connect(&host, MESSAGING_PORT).await?;
     println!("messaging connected");
-    let mut mobile = SharedMobileSettings::default();
-    mobile.hmd_type = HmdType::QUEST3;
-    mobile.resolution = Size2::new(2064, 2208);
-    mobile.desktop_framerate = 30;
-    mobile.measured_bandwidth = 20_000_000;
-    mobile.use_annex_b = annex_b;
+    let mobile = SharedMobileSettings {
+        hmd_type: HmdType::QUEST3,
+        resolution: Size2::new(2064, 2208),
+        desktop_framerate: 30,
+        measured_bandwidth: 20_000_000,
+        use_annex_b: annex_b,
+        ..Default::default()
+    };
     for msg in [reload_message(&mobile).unwrap(), reload_message(&SharedUserSettings::default()).unwrap()] {
         messaging.write_all(&msg.encode().unwrap()).await?;
     }

@@ -42,7 +42,7 @@ pub fn apply_gain_s16(pcm: &mut [u8], gain: f32) {
     if (gain - 1.0).abs() < f32::EPSILON {
         return;
     }
-    for s in pcm.chunks_exact_mut(2) {
+    for s in pcm.as_chunks_mut::<2>().0 {
         let v = f32::from(i16::from_le_bytes([s[0], s[1]])) * gain;
         s.copy_from_slice(&(v.clamp(-32768.0, 32767.0) as i16).to_le_bytes());
     }

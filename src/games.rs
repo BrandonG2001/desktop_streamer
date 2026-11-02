@@ -76,14 +76,13 @@ pub fn steam_games() -> Vec<GameEntry> {
             if !(name.starts_with("appmanifest_") && name.ends_with(".acf")) {
                 continue;
             }
-            if let Some(g) = parse_manifest(&e.path()) {
-                if !games.iter().any(|x: &GameEntry| x.id == g.id) {
+            if let Some(g) = parse_manifest(&e.path())
+                && !games.iter().any(|x: &GameEntry| x.id == g.id) {
                     games.push(g);
                 }
-            }
         }
     }
-    games.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    games.sort_by_key(|a| a.name.to_lowercase());
     games
 }
 
@@ -123,7 +122,7 @@ pub async fn launch(_app: &App, id: GameId) {
     }
     let url = format!("steam://rungameid/{}", id.id);
     let res = if cfg!(windows) {
-        // Null standard handles: inherited ones are stale once the console was released.
+        // The opener needs no standard handles.
         crate::async_command("cmd")
             .args(["/C", "start", "", &url])
             .stdin(std::process::Stdio::null())

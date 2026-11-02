@@ -1,0 +1,46 @@
+# Checks every push to main and every pull request: clippy (warnings are errors) and the tests,
+# on Linux and on Windows (with the in-process encoder, as the release build).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libudev-dev
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (without the in-process encoder)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy and test (with the in-process encoder)
+        shell: pwsh
+        run: |
+          . ./packaging/windows/ffmpeg-env.ps1
+          cargo clippy --workspace --all-targets --locked --features ffmpeg-lib -- -D warnings
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --workspace --locked --features ffmpeg-lib

@@ -579,7 +579,7 @@ fn find_vdvad() -> Option<IKsControl> {
             if em.Next(&mut monikers, Some(&mut fetched)).is_err() || fetched == 0 {
                 return None;
             }
-            let Some(moniker) = monikers[0].take() else { return None };
+            let moniker = monikers[0].take()?;
             let name = moniker
                 .BindToStorage::<_, _, IPropertyBag>(None::<&IBindCtx>, None::<&IMoniker>)
                 .ok()

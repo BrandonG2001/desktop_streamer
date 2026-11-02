@@ -594,12 +594,11 @@ impl SettingsWindow {
     /// * `before` - settings at the start of the frame.
     /// * `after` - settings after the widgets ran.
     fn commit(&mut self, before: &StreamerSettings, after: StreamerSettings) {
-        if before.start_with_windows != after.start_with_windows {
-            if let Err(e) = vd_platform::system::set_autostart(after.start_with_windows, &[]) {
+        if before.start_with_windows != after.start_with_windows
+            && let Err(e) = vd_platform::system::set_autostart(after.start_with_windows, &[]) {
                 warn!(error = %e, "cannot change the log-in autostart entry");
                 self.info(format!("Unable to change the startup setting:\n{e}"));
             }
-        }
         if before.encrypt_local_traffic != after.encrypt_local_traffic {
             let d = self.app.state.dynamic.borrow().clone();
             if d.is_connected && d.encrypted != after.encrypt_local_traffic {

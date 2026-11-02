@@ -134,10 +134,10 @@ impl RecordEncryptor {
     /// # Errors
     /// [`ProtocolError::Crypto`] if `buf.len()` is not a multiple of 16.
     pub fn encrypt_blocks(&mut self, buf: &mut [u8]) -> Result<()> {
-        if buf.len() % BLOCK != 0 {
+        if !buf.len().is_multiple_of(BLOCK) {
             return Err(ProtocolError::Crypto("buffer is not block aligned"));
         }
-        for block in buf.chunks_exact_mut(BLOCK) {
+        for block in buf.as_chunks_mut::<BLOCK>().0 {
             let block = GenericArray::from_mut_slice(block);
             match &mut self.enc {
                 Enc::A128(e) => e.encrypt_block_mut(block),
@@ -225,10 +225,10 @@ impl RecordDecryptor {
     /// # Errors
     /// [`ProtocolError::Crypto`] if `buf.len()` is not a multiple of 16.
     pub fn decrypt_blocks(&mut self, buf: &mut [u8]) -> Result<()> {
-        if buf.len() % BLOCK != 0 {
+        if !buf.len().is_multiple_of(BLOCK) {
             return Err(ProtocolError::Crypto("buffer is not block aligned"));
         }
-        for block in buf.chunks_exact_mut(BLOCK) {
+        for block in buf.as_chunks_mut::<BLOCK>().0 {
             let block = GenericArray::from_mut_slice(block);
             match &mut self.dec {
                 Dec::A128(d) => d.decrypt_block_mut(block),

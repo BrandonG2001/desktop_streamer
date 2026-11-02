@@ -79,22 +79,19 @@ async fn session_side_effects(app: Arc<App>) {
         let connected = rx.borrow().is_connected;
         if connected && optimizer.is_none() {
             optimizer = Some(vd_platform::wlan::WlanOptimizer::start());
-            if app.settings.lock().expect("poisoned").boost_priority {
-                if let Err(e) = vd_platform::process::set_high_priority(true) {
+            if app.settings.lock().expect("poisoned").boost_priority
+                && let Err(e) = vd_platform::process::set_high_priority(true) {
                     warn!(error = %e, "cannot raise process priority");
                 }
-            }
-        } else if !connected {
-            if let Some(o) = optimizer.take() {
+        } else if !connected
+            && let Some(o) = optimizer.take() {
                 tokio::task::spawn_blocking(move || o.stop());
                 let _ = vd_platform::process::set_high_priority(false);
-                if app.settings.lock().expect("poisoned").lock_computer && !app.is_shutting_down() {
-                    if let Err(e) = vd_platform::system::lock_workstation() {
+                if app.settings.lock().expect("poisoned").lock_computer && !app.is_shutting_down()
+                    && let Err(e) = vd_platform::system::lock_workstation() {
                         warn!(error = %e, "cannot lock the computer");
                     }
-                }
             }
-        }
         if rx.changed().await.is_err() {
             return;
         }

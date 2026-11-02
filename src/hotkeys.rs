@@ -87,11 +87,10 @@ impl Hotkeys {
         let actions: Arc<Mutex<HashMap<u32, BindingAction>>> = Arc::default();
         let map = Arc::clone(&actions);
         GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
-            if e.state == HotKeyState::Pressed {
-                if let Some(a) = map.lock().expect("poisoned").get(&e.id) {
+            if e.state == HotKeyState::Pressed
+                && let Some(a) = map.lock().expect("poisoned").get(&e.id) {
                     let _ = tx.send(*a);
                 }
-            }
         }));
         Some(Self { manager, actions, registered: Vec::new() })
     }

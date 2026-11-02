@@ -50,8 +50,8 @@ pub fn resolve(root: &Path, rel: &str) -> Option<PathBuf> {
 pub async fn send_listing(app: &App, rel: &str) {
     let root = videos_root(app);
     let mut entries = Vec::new();
-    if let Some(dir) = resolve(&root, rel) {
-        if let Ok(rd) = std::fs::read_dir(&dir) {
+    if let Some(dir) = resolve(&root, rel)
+        && let Ok(rd) = std::fs::read_dir(&dir) {
             let mut items: Vec<_> = rd.filter_map(|e| e.ok()).collect();
             items.sort_by_key(|e| e.file_name().to_string_lossy().to_lowercase());
             for e in items {
@@ -67,7 +67,6 @@ pub async fn send_listing(app: &App, rel: &str) {
                 }
             }
         }
-    }
     match encode_videos(&entries) {
         Ok(msg) => app.send(&msg).await,
         Err(e) => warn!(error = %e, "cannot encode video listing"),

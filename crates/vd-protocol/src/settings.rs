@@ -411,8 +411,7 @@ mod tests {
 
     #[test]
     fn reload_omits_defaults() {
-        let mut s = SharedStreamerSettings::default();
-        s.streaming_source = StreamingSource::Video;
+        let s = SharedStreamerSettings { streaming_source: StreamingSource::Video, ..Default::default() };
         let msg = reload_message(&s).unwrap();
         assert_eq!(msg.payload_text().unwrap(), r#"{"StreamingSource":2}"#);
         let back: SharedStreamerSettings = apply_reload(&msg).unwrap();

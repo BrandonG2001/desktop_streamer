@@ -55,7 +55,7 @@ async fn main() {
             p = session.next_capture() => {
                 let Some(p) = p else { break };
                 packets += 1;
-                for s in p.chunks_exact(2) {
+                for s in p.as_chunks::<2>().0 {
                     peak = peak.max(i16::from_le_bytes([s[0], s[1]]).saturating_abs());
                 }
             }

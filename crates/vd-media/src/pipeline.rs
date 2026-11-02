@@ -60,6 +60,7 @@ impl Controls {
 }
 
 /// A running capture + encode pipeline.
+#[allow(clippy::large_enum_variant, reason = "one per stream, never moved in a hot path")]
 pub enum VideoPipeline {
     /// `ffmpeg` child process.
     Cli(CliVideoPipeline),

@@ -197,20 +197,34 @@ pub fn gpu_name() -> Option<String> {
 /// the settings window is not accompanied by an empty console window.  When started from a
 /// terminal the console is shared with the shell and kept, so log output stays visible.
 ///
+/// The standard handles are cleared as well: `FreeConsole` closes them but leaves their values
+/// in place, where they go stale or are reused for sockets and files.  Console logging would then
+/// write into those, and processes started with inherited standard handles fail
+/// (`CreateProcess`: os error 6 or 50).  With null handles, output is discarded and children
+/// start without them.
+///
 /// # Returns
 /// `true` if the console was released.
 pub fn detach_own_console() -> bool {
     #[cfg(windows)]
     {
-        use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
+        use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleProcessList, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle};
         let mut pids = [0u32; 2];
         // SAFETY: the buffer holds 2 entries; the call reports how many processes share the console.
         let n = unsafe { GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32) };
-        if n == 1 {
-            // SAFETY: plain Win32 call.
-            return unsafe { FreeConsole() } != 0;
+        if n != 1 {
+            return false;
         }
-        return false;
+        // SAFETY: plain Win32 calls; a null standard handle is valid and means "none".
+        unsafe {
+            if FreeConsole() == 0 {
+                return false;
+            }
+            for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                SetStdHandle(id, std::ptr::null_mut());
+            }
+        }
+        return true;
     }
     #[allow(unreachable_code)]
     false

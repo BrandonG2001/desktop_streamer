@@ -564,22 +564,20 @@ impl SettingsWindow {
         ui.horizontal(|ui| {
             ui.label(RichText::new(screenshots.display().to_string()).color(theme::TEXT_DIM));
         });
-        if ui.button("Change location...").clicked() {
-            if let Some(p) = pick_folder("Select the folder where your screenshots will be saved", Some(&screenshots)) {
+        if ui.button("Change location...").clicked()
+            && let Some(p) = pick_folder("Select the folder where your screenshots will be saved", Some(&screenshots)) {
                 s.screenshots_root_path = Some(p.display().to_string());
             }
-        }
         info_line(ui, "Screenshots taken in VR will be copied to this folder", theme::TEXT_DIM);
         ui.add_space(14.0);
 
         section(ui, "Videos");
         ui.label(RichText::new(videos.display().to_string()).color(theme::TEXT_DIM));
-        if ui.button("Change location...").clicked() {
-            if let Some(p) = pick_folder("Select the root folder for your videos", Some(&videos)) {
+        if ui.button("Change location...").clicked()
+            && let Some(p) = pick_folder("Select the root folder for your videos", Some(&videos)) {
                 s.videos_root_path = Some(p.display().to_string());
                 self.video_folders = None;
             }
-        }
         info_line(ui, "Videos from this location will be accessible in VR", theme::TEXT_DIM);
         ui.add_space(8.0);
 
@@ -597,8 +595,8 @@ impl SettingsWindow {
                 }
             });
         }
-        if ui.button("Add video folder...").clicked() {
-            if let Some(target) = pick_folder("Select a folder containing videos", None) {
+        if ui.button("Add video folder...").clicked()
+            && let Some(target) = pick_folder("Select a folder containing videos", None) {
                 if target == videos {
                     self.info("The selected folder is already included");
                 } else if let Err(e) = add_video_folder(&videos, &target) {
@@ -606,7 +604,6 @@ impl SettingsWindow {
                 }
                 refresh = true;
             }
-        }
         if refresh {
             self.video_folders = None;
         }
