@@ -181,7 +181,7 @@ mod imp {
         /// Icon in ARGB32 (network byte order).
         fn icon_pixmap(&self) -> Vec<Icon> {
             let mut data = theme::icon_rgba(32, theme::status_color(self.status));
-            for px in data.chunks_exact_mut(4) {
+            for px in data.as_chunks_mut::<4>().0 {
                 px.rotate_right(1); // RGBA → ARGB
             }
             vec![Icon { width: 32, height: 32, data }]

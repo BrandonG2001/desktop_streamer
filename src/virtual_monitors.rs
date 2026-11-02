@@ -157,6 +157,8 @@ fn reconcile(app: &App, current: Option<VirtualDisplays>, target: Target) -> Opt
     if target.count == 0 {
         if let Some(vd) = current {
             let n = vd.count();
+            // Removes the displays (a no-op stub off Windows).
+            #[cfg_attr(not(windows), allow(clippy::drop_non_drop))]
             drop(vd);
             std::thread::sleep(DETACH_SETTLE);
             info!(count = n, "virtual monitors removed");
@@ -275,6 +277,7 @@ pub async fn run(app: Arc<App>) {
     }
     // Remove the displays now rather than when the keep-alive stops with the process.
     if let Some(vd) = current {
+        #[cfg_attr(not(windows), allow(clippy::drop_non_drop))]
         let _ = tokio::task::spawn_blocking(move || drop(vd)).await;
     }
 }
