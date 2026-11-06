@@ -1,6 +1,6 @@
 # desktop_streamer
 
-A Rust port of the Virtual Desktop Streamer 1.34.18, reverse-engineered from the shipped binaries. It targets Windows and Linux on x86-64 and ARM64.
+A Rust port of the Virtual Desktop Streamer 1.34.18 (re-checked against 1.34.25), reverse-engineered from the shipped binaries. It targets Windows and Linux on x86-64 and ARM64.
 See [docs/REVERSE_ENGINEERING.md](docs/REVERSE_ENGINEERING.md) for the protocol, the component mapping and what is not ported.
 
 ## Workspace

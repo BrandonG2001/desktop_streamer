@@ -85,7 +85,6 @@ pub fn optimal_desktop_resolution(hmd: HmdType, reported: (i32, i32)) -> (i32, i
         HmdType::QUEST3
         | HmdType::QUEST3S
         | HmdType::PICO4_ULTRA
-        | HmdType::PICO_1011
         | HmdType::GALAXY_XR
         | HmdType::XREAL_AURA
         | HmdType::PLAY_FOR_DREAM_MR
@@ -112,7 +111,6 @@ pub fn max_desktop_resolution(hmd: HmdType, monitor_count: i32) -> (i32, i32) {
         HmdType::QUEST3
         | HmdType::QUEST3S
         | HmdType::PICO4_ULTRA
-        | HmdType::PICO_1011
         | HmdType::GALAXY_XR
         | HmdType::XREAL_AURA
         | HmdType::PLAY_FOR_DREAM_MR
@@ -165,7 +163,6 @@ pub fn max_monitors(hmd: HmdType) -> i32 {
         HmdType::QUEST3
         | HmdType::QUEST3S
         | HmdType::PICO4_ULTRA
-        | HmdType::PICO_1011
         | HmdType::GALAXY_XR
         | HmdType::XREAL_AURA
         | HmdType::PLAY_FOR_DREAM_MR
@@ -275,7 +272,7 @@ pub fn max_vr_bitrate(hmd: HmdType, codec: VideoCodec) -> i32 {
         HmdType::QUEST3 | HmdType::QUEST3S => {
             if plus { 500_000_000 } else { 200_000_000 }
         }
-        HmdType::PICO4_ULTRA | HmdType::PICO_1011 | HmdType::GALAXY_XR | HmdType::XREAL_AURA | HmdType::PLAY_FOR_DREAM_MR | HmdType::STEAM_FRAME => {
+        HmdType::PICO4_ULTRA | HmdType::GALAXY_XR | HmdType::XREAL_AURA | HmdType::PLAY_FOR_DREAM_MR | HmdType::STEAM_FRAME => {
             if plus { 600_000_000 } else { 200_000_000 }
         }
         _ => 40_000_000,

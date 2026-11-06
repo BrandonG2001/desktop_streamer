@@ -54,6 +54,8 @@ pub struct StreamPlan {
     pub use_annex_b: bool,
     /// Key-frame request counter at planning time.
     pub keyframe_generation: u64,
+    /// Stream restart counter at planning time (`RestartStream`).
+    pub restart_generation: u64,
 }
 
 /// Lists monitors, falling back to one virtual monitor at the headset's optimal resolution when
@@ -132,6 +134,7 @@ pub fn plan(app: &App, media: &MediaEnv) -> Option<StreamPlan> {
         draw_cursor: !hmd::is_flat_device(hmd_type),
         use_annex_b: mobile.use_annex_b,
         keyframe_generation: dynamic.keyframe_requests,
+        restart_generation: dynamic.stream_restarts,
     })
 }
 
@@ -383,8 +386,8 @@ impl Lockstep {
 /// Sends the stream descriptor for `plan` unless the headset already has the same one.
 ///
 /// The original sends the descriptor only when its encoders are (re)created
-/// (`DesktopStreamer` initialisation); a key-frame request (`RestartStreaming` →
-/// `ForceKeyFrame`) does not send it.  This port restarts FFmpeg to get a key frame, but must not
+/// (`DesktopStreamer` initialisation, or `RestartStream`); a key-frame request
+/// (`ForceKeyFrame`) does not send it.  This port may restart FFmpeg to get a key frame, but must not
 /// re-send an identical descriptor: the headset treats it as a new stream and rebuilds the scene,
 /// resetting the environment to the black void (e.g. after recentring with the Meta button).
 ///
@@ -508,6 +511,11 @@ async fn stream(app: &Arc<App>, media: &MediaEnv, mut plan: StreamPlan, last_des
             break;
         }
         let change = plan_change(app, media, &plan, &pipelines, started);
+        if change.new_stream {
+            // The headset asked for a new stream: send the descriptor even if it is unchanged.
+            info!("stream restart requested by the headset");
+            *last_descriptor = None;
+        }
         if change.restart {
             break;
         }
@@ -534,8 +542,11 @@ async fn stream(app: &Arc<App>, media: &MediaEnv, mut plan: StreamPlan, last_des
 /// How the current plan must change.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct PlanChange {
-    /// Codec, frame rate, monitors or bitstream format changed: restart.
+    /// Codec, frame rate, monitors or bitstream format changed, or a new stream was requested:
+    /// restart.
     restart: bool,
+    /// The headset requested a new stream (`RestartStream`).
+    new_stream: bool,
     /// New per-monitor bitrate to apply.
     bitrate: Option<u32>,
     /// A key frame was requested (new `keyframe_requests` generation).
@@ -563,7 +574,8 @@ const BITRATE_RAISE_INTERVAL: Duration = Duration::from_secs(30);
 /// What has to change.
 fn plan_change(app: &App, media: &MediaEnv, plan: &StreamPlan, pipelines: &[Pipeline], started: std::time::Instant) -> PlanChange {
     let Some(new) = self::plan(app, media) else { return PlanChange { restart: true, ..PlanChange::default() } };
-    let restart = new.codec != plan.codec || new.framerate != plan.framerate || new.monitors != plan.monitors || new.use_annex_b != plan.use_annex_b;
+    let new_stream = new.restart_generation != plan.restart_generation;
+    let restart = new_stream || new.codec != plan.codec || new.framerate != plan.framerate || new.monitors != plan.monitors || new.use_annex_b != plan.use_annex_b;
     let live = pipelines.iter().all(|p| !matches!(p.controls, Controls::None));
     let (old, now) = (f64::from(plan.bitrate), f64::from(new.bitrate));
     let bitrate_changed = if live {
@@ -575,6 +587,7 @@ fn plan_change(app: &App, media: &MediaEnv, plan: &StreamPlan, pipelines: &[Pipe
     };
     PlanChange {
         restart,
+        new_stream,
         bitrate: bitrate_changed.then_some(new.bitrate),
         keyframe: (new.keyframe_generation != plan.keyframe_generation).then_some(new.keyframe_generation),
     }

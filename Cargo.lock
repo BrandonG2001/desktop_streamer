@@ -774,7 +774,7 @@ dependencies = [
 
 [[package]]
 name = "desktop_streamer"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -4864,7 +4864,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vd-media"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "ffmpeg-sys-next",
  "serde",
@@ -4877,7 +4877,7 @@ dependencies = [
 
 [[package]]
 name = "vd-net"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "bytemuck",
  "if-addrs",
@@ -4898,7 +4898,7 @@ dependencies = [
 
 [[package]]
 name = "vd-platform"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "evdev",
  "libc",
@@ -4913,7 +4913,7 @@ dependencies = [
 
 [[package]]
 name = "vd-protocol"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "aes",
  "bytemuck",

@@ -712,7 +712,7 @@ impl SettingsWindow {
         ui.horizontal_centered(|ui| {
             ui.add_space(16.0);
             ui.label(RichText::new("Version:").color(theme::TEXT_TAB));
-            ui.label(format!("{} (port of 1.34.18)", env!("CARGO_PKG_VERSION")));
+            ui.label(format!("{} (port of 1.34.25)", env!("CARGO_PKG_VERSION")));
             if let Some((version, progress)) = self.update_progress() {
                 ui.add_space(12.0);
                 ui.label(RichText::new(format!("Downloading {version}...")).color(theme::TEXT_DIM));

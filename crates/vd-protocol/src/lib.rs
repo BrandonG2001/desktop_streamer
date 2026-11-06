@@ -7,7 +7,8 @@
 //! `VirtualDesktop.Streamer.exe` v1.34.18 (a SmartAssembly-obfuscated .NET Framework 4.7.1
 //! assembly).  The original (obfuscated) type that each Rust item replaces is cited in the
 //! item documentation as `C#: <namespace>.<type>` so the mapping can be re-verified against a
-//! newer build.  See `docs/REVERSE_ENGINEERING.md` at the repository root for the full write-up.
+//! newer build; it was re-checked against 1.34.25 (obfuscated names can differ between builds).
+//! See `docs/REVERSE_ENGINEERING.md` at the repository root for the full write-up.
 //!
 //! Module overview:
 //!

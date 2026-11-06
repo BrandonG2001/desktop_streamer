@@ -251,12 +251,17 @@ impl HmdType {
     pub const QUEST3: Self = Self(1000);
     pub const QUEST3S: Self = Self(1001);
     pub const PICO4_ULTRA: Self = Self(1010);
-    /// Undocumented member following Pico 4 Ultra (no display name in the binary).
-    pub const PICO_1011: Self = Self(1011);
     pub const GALAXY_XR: Self = Self(1100);
-    pub const XREAL_AURA: Self = Self(1200);
     pub const PLAY_FOR_DREAM_MR: Self = Self(1400);
     pub const STEAM_FRAME: Self = Self(1500);
+    /// 1200 up to 1.34.18.
+    pub const XREAL_AURA: Self = Self(1600);
+    // New in 1.34.25.  They show up to four monitors, described by a longer stream descriptor
+    // (packet tag 4) that the port does not send; their tables use the defaults.
+    pub const PICO_SPACE_PRO: Self = Self(1700);
+    pub const META_VR_GLASSES: Self = Self(1710);
+    pub const VISION_PRO_M2: Self = Self(1800);
+    pub const VISION_PRO_M5: Self = Self(1801);
 
     /// Display name from the `EnumDisplayName` attribute.
     ///
@@ -283,9 +288,13 @@ impl HmdType {
             1001 => "Meta Quest 3S",
             1010 => "Pico 4 Ultra",
             1100 => "Samsung Galaxy XR",
-            1200 => "XREAL Aura",
             1400 => "Play for Dream MR",
             1500 => "Steam Frame",
+            1600 => "XREAL Aura",
+            1700 => "Pico Space Pro",
+            1710 => "Meta VR Glasses",
+            1800 => "Apple Vision Pro M2",
+            1801 => "Apple Vision Pro M5",
             _ => "Unknown",
         }
     }

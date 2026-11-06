@@ -191,7 +191,8 @@ pub async fn run(app: Arc<App>, mut rx: mpsc::UnboundedReceiver<NetMessage>) {
             }
             Request::CrashCallstack(m, stack) => error!(message = %m, %stack, "headset crash report"),
             Request::Simple(MessageType::UpdateRequired) => app.send(&NetMessage::new(MessageType::UpdateUnavailable)).await,
-            Request::Simple(MessageType::RestartStreaming | MessageType::BeginStreaming) => app.request_keyframe_all(),
+            Request::Simple(MessageType::ForceKeyFrame) => app.request_keyframe_all(),
+            Request::Simple(MessageType::RestartStream) => app.state.request_stream_restart(),
             Request::Simple(MessageType::SwitchMonitor) => switch_monitor(&app),
             Request::Simple(MessageType::Exit) => {
                 info!("headset requested exit");

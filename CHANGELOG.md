@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.7.0
 
+* **Headsets can connect again.** The Virtual Desktop server stopped accepting the version the port reported (1.34.18), so every session failed with "Streamer needs to be updated". The port now reports 1.34.25, the current official version, and its protocol was re-checked against it. Settings files that store the old version are updated automatically. If the server raises its minimum again before a new port release, you can enter a newer `ReportedVersion` in the settings file; a version older than the built-in one is ignored.
+* The headset's "restart stream" request now restarts the encoders and resends the stream description, like the official streamer; before it only requested a key frame.
+* Updated headset types: XREAL Aura's id changed, and Pico Space Pro, Meta VR Glasses and Apple Vision Pro are recognised by name. The four-monitor mode those devices support is not ported yet.
 * When started from its shortcut, the streamer now clears its standard input and output after closing its console. Before, log output could land in an unrelated file or network connection, and programs it started could fail to launch (the cause of the 1.6.1 fix).
 
 ## 1.6.1

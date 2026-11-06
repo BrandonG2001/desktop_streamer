@@ -223,7 +223,7 @@ async fn on_connected(app: &App, encrypted: bool) {
 }
 
 impl App {
-    /// Requests key frames (new session or `RestartStreaming`).
+    /// Requests key frames (new session or `ForceKeyFrame`).
     pub fn request_keyframe_all(&self) {
         self.state.request_keyframe();
     }

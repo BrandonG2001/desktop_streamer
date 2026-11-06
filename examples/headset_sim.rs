@@ -11,6 +11,7 @@
 //! cargo run --example headset_sim -- 127.0.0.1 out.h264 10 length-prefixed   # like a Quest (UseAnnexB = false)
 //! cargo run --example headset_sim -- 127.0.0.1 out.h264 10 length-prefixed remove-monitor
 //! cargo run --example headset_sim -- 127.0.0.1 out.h264 10 length-prefixed restart-streaming
+//! cargo run --example headset_sim -- 127.0.0.1 out.h264 10 length-prefixed restart-stream
 //! ```
 
 use std::time::{Duration, Instant};
@@ -148,11 +149,13 @@ async fn main() -> std::io::Result<()> {
         }
     });
     // `remove-monitor` presses the headset's remove-monitor button after 3 s; `restart-streaming`
-    // sends the key-frame request the headset makes e.g. after recentring.
+    // sends the key-frame request the headset makes e.g. after recentring; `restart-stream` asks
+    // for a new stream (new encoders and stream descriptor).
     // `bandwidth-drop` reports a lower measured bandwidth (the streamer must lower its bitrate).
     let action = match args.get(5).map(String::as_str) {
         Some("remove-monitor") => Some(vd_protocol::NetMessage::new(vd_protocol::MessageType::RemoveMonitor)),
-        Some("restart-streaming") => Some(vd_protocol::NetMessage::new(vd_protocol::MessageType::RestartStreaming)),
+        Some("restart-streaming") => Some(vd_protocol::NetMessage::new(vd_protocol::MessageType::ForceKeyFrame)),
+        Some("restart-stream") => Some(vd_protocol::NetMessage::new(vd_protocol::MessageType::RestartStream)),
         Some("bandwidth-drop") => Some(vd_protocol::settings::property_message::<SharedMobileSettings, _>("MeasuredBandwidth", &5_000_000i32).unwrap()),
         _ => None,
     };

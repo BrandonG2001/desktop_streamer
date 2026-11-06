@@ -45,6 +45,8 @@ pub struct DynamicState {
     pub monitor_start_index: usize,
     /// Incremented whenever a key frame must be produced (`ForceKeyFrame = true`).
     pub keyframe_requests: u64,
+    /// Incremented whenever the headset asks for a new stream (`RestartStream`).
+    pub stream_restarts: u64,
     /// Latest headset frame index (echoed in frame headers).
     pub last_headset_frame: i32,
     /// GPU / encoder description (`AdapterName`).
@@ -96,6 +98,11 @@ impl StateHub {
     /// Requests a key frame from every encoder (`DynamicSettings.ForceKeyFrame = true`).
     pub fn request_keyframe(&self) {
         self.dynamic.send_modify(|d| d.keyframe_requests += 1);
+    }
+
+    /// Restarts the stream: new encoders and a new stream descriptor (`RestartStream`).
+    pub fn request_stream_restart(&self) {
+        self.dynamic.send_modify(|d| d.stream_restarts += 1);
     }
 
     /// Current streaming source.

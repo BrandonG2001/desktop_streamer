@@ -94,10 +94,13 @@ message_types! {
     BoundaryDataChanged = 21,
     /// Hand/body skeleton description changed (VR).
     SkeletonDataChanged = 22,
-    /// Start streaming.
-    BeginStreaming = 23,
-    /// Restart streaming (forces a key frame).
-    RestartStreaming = 24,
+    /// Restart the stream: the encoders are recreated and the stream descriptor is sent again
+    /// (1.34.25 `StreamerManager` → `DesktopStreamer` ends every capture).  Named
+    /// `BeginStreaming` up to 1.34.18.
+    RestartStream = 23,
+    /// Request a key frame (`DynamicSettings.ForceKeyFrame`).  Named `RestartStreaming` up to
+    /// 1.34.18.
+    ForceKeyFrame = 24,
     /// Switch to the next monitor.
     SwitchMonitor = 25,
     /// Toggle Windows dictation (Win+H).
@@ -202,6 +205,33 @@ message_types! {
     ComputerAwaken = 91,
     /// Append a line to `Desktop/Log.txt` (`string`).
     Log = 100,
+    // Clipboard sharing (new in 1.34.25; not ported, the messages are ignored).
+    /// The clipboard of the sender changed.
+    ClipboardChanged = 101,
+    /// Request the clipboard text.
+    ClipboardRequestText = 102,
+    /// Request the clipboard image.
+    ClipboardRequestImage = 103,
+    /// Request the descriptors of the copied files.
+    ClipboardRequestFileDescriptors = 104,
+    /// Request the copied files.
+    ClipboardRequestFiles = 105,
+    /// Clipboard text.
+    ClipboardText = 106,
+    /// Clipboard image.
+    ClipboardImage = 107,
+    /// Descriptors of the copied files.
+    ClipboardFileDescriptors = 108,
+    /// Copied files.
+    ClipboardFiles = 109,
+    /// A file copy started.
+    ClipboardCopying = 110,
+    /// A file copy finished.
+    ClipboardCopyingComplete = 111,
+    /// The copy exceeds the size limit.
+    ClipboardLimitExceeded = 112,
+    /// The clipboard content was copied.
+    ClipboardCopied = 113,
 }
 
 /// A framed control message.

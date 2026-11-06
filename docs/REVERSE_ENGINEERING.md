@@ -1,5 +1,7 @@
 # Virtual Desktop Streamer 1.34.18 — reverse-engineering notes
 
+Re-checked against 1.34.25 in November 2026; see §6e for what changed.
+
 Source of truth for the Rust port. Every claim below says how it was established. **Observed**
 means read directly from decompiled code, IL or Ghidra pseudocode. **Inferred** means deduced
 from usage and still needs confirming against live traffic.
@@ -227,6 +229,21 @@ Observed in 1.34.25, the version installed when this was ported. The service run
   * **Physical** (default) works like the original: virtual monitors fill up to `MonitorCount`, after the physical ones.
   * **Virtual** streams only virtual monitors (`MonitorCount`, "All" = the headset maximum).
   * In both modes the virtual monitors exist only while a headset is connected.
+
+## 6e. Changes in 1.34.25
+
+The port was built from 1.34.18. In November 2026 the registry stopped accepting that version: `RegisterComputer` returned `_isValid = false`, which the port reports as "Streamer needs to be updated". With 1.34.25.0 reported it is accepted again. The 1.34.25 binary (SHA-256 `0229a322…0bfb8`) was compared with the port: `ilspycmd` 8.2 decompile; REA could not admit its metadata, as before.
+
+* **Unchanged (observed):**
+  * The fields of the three shared-settings classes. The only C# fields without a port counterpart are `[JsonIgnore] DesktopBitrate`, which the port computes, and an internal `_vrStart` timestamp.
+  * The 88-byte stream descriptor (packet tag 2), its 3-monitor layout, and the message ids 1–100.
+* **Message 23 is now `RestartStream`, 24 is `ForceKeyFrame`** (were `BeginStreaming`/`RestartStreaming`). 24 sets `DynamicSettings.ForceKeyFrame`, as before. 23 makes `StreamerManager` run, on the streamer thread, `DesktopStreamer._0004()`, which ends every monitor capture so the encoders are recreated and the descriptor is sent again (VR: `OculusStreamer._0002()`). The port restarts its pipelines and re-sends the descriptor.
+* **Clipboard sharing:** new message ids 101–113 (`ClipboardChanged` … `ClipboardCopied`). Not ported; the port ignores them as before.
+* **Headset types:**
+  * XREAL Aura is now 1600 (was 1200), and 1011 is gone.
+  * New: Pico Space Pro 1700, Meta VR Glasses 1710, Apple Vision Pro M2 1800 and M5 1801.
+  * `MaxMonitors` is 4 for those four, otherwise unchanged (1/2/3).
+* **4-monitor descriptor:** a 112-byte descriptor (the 88-byte layout plus a fourth size and rectangle), sent with packet tag 4 only when `hmdType >= 1700`. Every other headset still gets the first 88 bytes with tag 2. Not ported: the port describes at most 3 monitors.
 
 ## 7. Known uncertainties
 

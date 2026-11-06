@@ -111,6 +111,28 @@ impl PortOptions {
     }
 }
 
+/// Streamer version reported to the registry by default: the original release whose protocol
+/// the port follows.  The registry refuses versions it considers outdated.
+pub const REPORTED_VERSION: &str = "1.34.25.0";
+/// [`REPORTED_VERSION`] as `(major, minor, build, revision)`.
+const BUILT_IN_VERSION: (i32, i32, i32, i32) = (1, 34, 25, 0);
+
+/// Parses a version such as `1.34.25.0` (the revision may be omitted).
+///
+/// # Arguments
+/// * `s` - version text.
+///
+/// # Returns
+/// `(major, minor, build, revision)`, or `None` unless there are three or four numeric parts.
+fn parse_version(s: &str) -> Option<(i32, i32, i32, i32)> {
+    let parts: Vec<i32> = s.trim().split('.').map(|p| p.trim().parse().ok()).collect::<Option<_>>()?;
+    match parts[..] {
+        [a, b, c] => Some((a, b, c, 0)),
+        [a, b, c, d] => Some((a, b, c, d)),
+        _ => None,
+    }
+}
+
 /// Current settings layout version.  1: `MonitorCount` 0 means "all monitors" (earlier builds
 /// stored 1 without any way to change it).
 pub const SETTINGS_VERSION: u32 = 1;
@@ -135,7 +157,7 @@ impl Default for PortOptions {
             encoder_backend: None,
             allow_software_encoder: true,
             reported_os: Os::Windows,
-            reported_version: "1.34.18.0".into(),
+            reported_version: REPORTED_VERSION.into(),
             keyframe_interval_seconds: 2,
             manage_audio_devices: true,
             microphone_device: mic_auto(),
@@ -360,6 +382,10 @@ impl StreamerSettings {
                 self.monitor_count = 0;
             }
         }
+        // Each build stored its own default; an older one is no longer accepted by the registry.
+        if parse_version(&self.port.reported_version).is_none_or(|v| v < BUILT_IN_VERSION) {
+            self.port.reported_version = REPORTED_VERSION.to_owned();
+        }
         self.port.settings_version = SETTINGS_VERSION;
     }
 
@@ -455,14 +481,15 @@ impl StreamerSettings {
 
     /// Parses `ReportedVersion` into `(major, minor, build, revision)`.
     ///
+    /// The result is never older than [`REPORTED_VERSION`]: settings files store the default of
+    /// the build that wrote them, and the registry rejects versions it considers outdated
+    /// ("Streamer needs to be updated").  A higher value is kept, so users can follow a new
+    /// minimum before the port is updated.
+    ///
     /// # Returns
-    /// The version tuple (`1.34.18.0` if malformed).
+    /// The version tuple ([`REPORTED_VERSION`] if malformed or older).
     pub fn reported_version(&self) -> (i32, i32, i32, i32) {
-        let mut it = self.port.reported_version.split('.').map(|p| p.parse::<i32>().unwrap_or(0));
-        match (it.next(), it.next(), it.next(), it.next()) {
-            (Some(a), Some(b), Some(c), d) => (a, b, c, d.unwrap_or(0)),
-            _ => (1, 34, 18, 0),
-        }
+        parse_version(&self.port.reported_version).map_or(BUILT_IN_VERSION, |v| v.max(BUILT_IN_VERSION))
     }
 }
 
@@ -488,5 +515,19 @@ mod tests {
         let mut chosen: StreamerSettings = serde_json::from_str(r#"{"MonitorCount":1,"Port":{"SettingsVersion":1}}"#).unwrap();
         chosen.migrate();
         assert_eq!(chosen.monitor_count, 1, "a count chosen after the migration is kept");
+    }
+
+    #[test]
+    fn reported_version_is_never_older_than_the_built_in_one() {
+        let mut old: StreamerSettings = serde_json::from_str(r#"{"Port":{"ReportedVersion":"1.34.18.0"}}"#).unwrap();
+        assert_eq!(old.reported_version(), (1, 34, 25, 0));
+        old.migrate();
+        assert_eq!(old.port.reported_version, REPORTED_VERSION);
+        let mut newer: StreamerSettings = serde_json::from_str(r#"{"Port":{"ReportedVersion":"1.35.2"}}"#).unwrap();
+        newer.migrate();
+        assert_eq!(newer.reported_version(), (1, 35, 2, 0));
+        assert_eq!(newer.port.reported_version, "1.35.2", "a newer version entered by the user is kept");
+        let broken: StreamerSettings = serde_json::from_str(r#"{"Port":{"ReportedVersion":"x"}}"#).unwrap();
+        assert_eq!(broken.reported_version(), (1, 34, 25, 0));
     }
 }
